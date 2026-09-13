@@ -147,6 +147,7 @@ def apply_layout_fields(
     meta["layoutExtractionModel"] = model
     meta["layoutExtractionProvider"] = provider
     meta["layoutSource"] = source
+    meta["studioJob"] = "layout"
     out["meta"] = meta
     return out
 
@@ -446,6 +447,59 @@ def normalize_layout(
     }
 
 
+def extract_layout_from_image_bytes(
+    raw: bytes,
+    *,
+    config: dict[str, Any],
+    mime_type: str = "image/png",
+    progress: ProgressCallback | None = None,
+    cancel_event: Any = None,
+) -> tuple[dict[str, Any], str]:
+    """Detect UI chrome in image bytes. Returns (normalized layout, model id)."""
+    from .cancellation import raise_if_cancelled
+    from .creation_utils import extract_json_object
+    from .generator import _active_model_and_provider
+
+    def _cancelled() -> bool:
+        return bool(cancel_event is not None and cancel_event.is_set())
+
+    raise_if_cancelled(_cancelled)
+
+    model_id, provider = _active_model_and_provider(config)
+    if provider != "gemini":
+        raise RuntimeError(
+            "Extracting layout requires Gemini. Paste a Gemini API key in Settings."
+        )
+
+    if not raw:
+        raise RuntimeError("No image bytes to extract a layout from.")
+    if len(raw) > MAX_INLINE_BYTES:
+        raise RuntimeError(
+            f"Image is too large to extract a layout ({len(raw) // (1024 * 1024)} MB). "
+            "Try a smaller image."
+        )
+
+    image_mime = mime_type if str(mime_type or "").lower().startswith("image/") else "image/png"
+    _emit(progress, "Looking for UI chrome…", percent=40)
+    text, used_model = _gemini_multimodal(
+        raw,
+        mime_type=image_mime,
+        prompt=LAYOUT_PROMPT,
+        config=config,
+        model_id=model_id,
+        progress=progress,
+        cancel_check=_cancelled,
+        cancel_event=cancel_event,
+    )
+    parsed = extract_json_object(text or "")
+    if not parsed:
+        raise RuntimeError("Gemini did not return layout JSON. Try the prompt again.")
+
+    layout = normalize_layout(parsed, image_size=image_size_from_bytes(raw))
+    _emit(progress, "Saving layout…", percent=90)
+    return layout, used_model
+
+
 def extract_layout_from_creation(
     creation: dict[str, Any],
     *,
@@ -456,7 +510,6 @@ def extract_layout_from_creation(
 ) -> dict[str, Any]:
     """Run UI layout detection and return updated creation (not yet persisted)."""
     from .cancellation import raise_if_cancelled
-    from .creation_utils import extract_json_object
     from .generator import _active_model_and_provider
     from .modality import normalize_modality
 
@@ -473,13 +526,7 @@ def extract_layout_from_creation(
         elif mime.startswith("image/"):
             modality = "image"
     if modality not in {"image", "video"}:
-        raise RuntimeError("Extract Layout is only available for image and video creations.")
-
-    model_id, provider = _active_model_and_provider(config)
-    if provider != "gemini":
-        raise RuntimeError(
-            "Extract Layout requires Gemini. Paste a Gemini API key in Settings."
-        )
+        raise RuntimeError("Layout extract is only available for image and video creations.")
 
     path = media_path
     if path is None:
@@ -495,7 +542,7 @@ def extract_layout_from_creation(
             raw = extract_video_frame_png(path, at_seconds=0.5)
         except FfmpegNotFoundError as exc:
             raise RuntimeError(
-                "ffmpeg not found — needed to grab a video frame for Extract Layout."
+                "ffmpeg not found — needed to grab a video frame to extract the layout."
             ) from exc
         image_mime = "image/png"
         source = "video-frame"
@@ -503,29 +550,14 @@ def extract_layout_from_creation(
         raw = path.read_bytes() if hasattr(path, "read_bytes") else bytes(path)
         image_mime = mime if mime.startswith("image/") else "image/png"
 
-    if len(raw) > MAX_INLINE_BYTES:
-        raise RuntimeError(
-            f"Image is too large for Extract Layout ({len(raw) // (1024 * 1024)} MB). "
-            "Try a smaller image."
-        )
-
-    _emit(progress, "Looking for UI chrome…", percent=40)
-    text, used_model = _gemini_multimodal(
+    layout, used_model = extract_layout_from_image_bytes(
         raw,
-        mime_type=image_mime,
-        prompt=LAYOUT_PROMPT,
         config=config,
-        model_id=model_id,
+        mime_type=image_mime,
         progress=progress,
-        cancel_check=_cancelled,
         cancel_event=cancel_event,
     )
-    parsed = extract_json_object(text or "")
-    if not parsed:
-        raise RuntimeError("Gemini did not return layout JSON. Try Extract Layout again.")
-
-    layout = normalize_layout(parsed, image_size=image_size_from_bytes(raw))
-    _emit(progress, "Saving layout…", percent=90)
+    _, provider = _active_model_and_provider(config)
     return apply_layout_fields(
         creation,
         layout=layout,

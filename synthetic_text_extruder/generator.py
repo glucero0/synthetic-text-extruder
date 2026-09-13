@@ -38,7 +38,11 @@ def generate_creation(
     """Dispatch to Gemini and return a creation document."""
     from .cancellation import raise_if_cancelled
     from .gemini_provider import generate_with_gemini
-    from .modality import infer_prompt_modality
+    from .modality import (
+        infer_layout_extract_intent,
+        infer_prompt_modality,
+        infer_text_extract_intent,
+    )
 
     def _cancelled() -> bool:
         return bool(cancel_event is not None and cancel_event.is_set())
@@ -70,10 +74,68 @@ def generate_creation(
 
     from .modality import resolve_generation_modality
 
+    prompt_text = creation_description or game
+    if infer_layout_extract_intent(prompt_text):
+        if not basis or not basis.get("bytes"):
+            raise RuntimeError(
+                "Load an image or video as the Studio basis, then ask to extract the layout."
+            )
+        from .extract_layout import apply_layout_fields, extract_layout_from_image_bytes
+
+        layout, used_model = extract_layout_from_image_bytes(
+            basis["bytes"],
+            config=config,
+            mime_type=str(basis.get("mime_type") or "image/png"),
+            progress=progress,
+            cancel_event=cancel_event,
+        )
+        source = basis.get("source_creation")
+        if not isinstance(source, dict):
+            source = {
+                "id": basis.get("creation_id"),
+                "modality": basis_mod or "image",
+                "mimeType": str(basis.get("mime_type") or "image/png"),
+            }
+        source_kind = (
+            "video-frame"
+            if str(basis.get("source_modality") or "").lower() == "video"
+            or basis_mod == "video"
+            else "image"
+        )
+        raise_if_cancelled(_cancelled)
+        return apply_layout_fields(
+            source,
+            layout=layout,
+            model=used_model,
+            provider="gemini",
+            source=source_kind,
+        )
+
+    if infer_text_extract_intent(prompt_text):
+        source = basis.get("source_creation") if basis else None
+        if not isinstance(source, dict):
+            raise RuntimeError(
+                "Load an image or video as the Studio basis, then ask to extract the text or transcribe."
+            )
+        from .extract_text import extract_text_from_creation
+        from .media_store import resolve_media_path
+
+        path = resolve_media_path(source.get("mediaPath"), config=config)
+        if path is None:
+            raise RuntimeError("Media basis file is missing on disk.")
+        raise_if_cancelled(_cancelled)
+        return extract_text_from_creation(
+            source,
+            config=config,
+            media_path=path,
+            progress=progress,
+            cancel_event=cancel_event,
+        )
+
     # Prompt intent wins (e.g. "generate a video" + image basis → I2V).
     # Ambiguous prompts with a media basis keep the basis modality.
     forced_modality = resolve_generation_modality(
-        creation_description or game,
+        prompt_text,
         basis_modality=basis_mod or None,
         layout_basis=bool(basis and basis.get("extracted_layout")),
     )

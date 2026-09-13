@@ -95,6 +95,7 @@ def apply_extraction_fields(
     meta["extractedAt"] = _utcnow_iso()
     meta["extractionModel"] = model
     meta["extractionProvider"] = provider
+    meta["studioJob"] = "extract"
     out["meta"] = meta
     return out
 

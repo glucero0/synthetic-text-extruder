@@ -62,6 +62,7 @@ DEFAULTS: dict[str, Any] = {
         "crt_enabled": False,
         "ui_scale": 1.0,
         "ui_font": "inter",
+        "ui_font_size": 13,
         "app_theme": "light",
         "custom_theme": {
             "desktop_color": "#008080",
@@ -92,6 +93,9 @@ DEFAULTS: dict[str, Any] = {
 STUDIO_BASIS_WIDTH_MIN = 160
 STUDIO_BASIS_WIDTH_MAX = 1200
 STUDIO_BASIS_WIDTH_DEFAULT = 280
+UI_FONT_SIZE_MIN = 11
+UI_FONT_SIZE_MAX = 22
+UI_FONT_SIZE_DEFAULT = 13
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -199,6 +203,7 @@ def load_config() -> dict[str, Any]:
         ui["studio_basis_width"] = normalize_studio_basis_width(
             ui.get("studio_basis_width")
         )
+        ui["ui_font_size"] = normalize_ui_font_size(ui.get("ui_font_size"))
     return cfg
 
 
@@ -267,6 +272,7 @@ def save_config(updates: dict[str, Any], existing: dict[str, Any] | None = None)
     ui_out["studio_basis_width"] = normalize_studio_basis_width(
         ui_out.get("studio_basis_width")
     )
+    ui_out["ui_font_size"] = normalize_ui_font_size(ui_out.get("ui_font_size"))
 
     gemini_out = normalize_gemini_cfg(merged.get("gemini") or {})
     prompt_out = dict(merged.get("prompt") or {})
@@ -297,6 +303,15 @@ def save_config(updates: dict[str, Any], existing: dict[str, Any] | None = None)
     merged.pop("huggingface", None)
     merged["ui"] = ui_out
     return merged
+
+
+def normalize_ui_font_size(raw: Any) -> int:
+    """Clamp Appearance UI font size (px) for config I/O."""
+    try:
+        value = int(round(float(raw)))
+    except (TypeError, ValueError):
+        return UI_FONT_SIZE_DEFAULT
+    return max(UI_FONT_SIZE_MIN, min(UI_FONT_SIZE_MAX, value))
 
 
 def normalize_studio_basis_width(raw: Any) -> int:

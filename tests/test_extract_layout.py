@@ -1,4 +1,4 @@
-"""Tests for Viewer Extract Layout helpers and API."""
+"""Tests for Studio layout-extract helpers and API."""
 
 from __future__ import annotations
 
@@ -257,6 +257,65 @@ def test_extract_creation_layout_job_persists(tmp_path, monkeypatch):
     assert get_extracted_layout(stored)["elements"][0]["id"] == "e1"
 
 
+def test_create_creation_extract_layout_from_studio_prompt(tmp_path, monkeypatch):
+    api = _api_with_tmp_store(tmp_path, monkeypatch)
+    media_dir = tmp_path / "media"
+    media_dir.mkdir(parents=True, exist_ok=True)
+    (media_dir / "doc_studio_extract.png").write_bytes(
+        b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + b"\x00\x00\x00\x01\x00\x00\x00\x01" + b"\x00\x00\x00\x00"
+    )
+    creation = build_media_creation(
+        modality="image",
+        prompt="dialog",
+        media_path="media/doc_studio_extract.png",
+        mime_type="image/png",
+        title="Shot",
+        creation_id="doc_studio_extract",
+    )
+    api.store.upsert(creation)
+
+    layout = {
+        "isUi": True,
+        "confidence": 0.8,
+        "width": 100,
+        "height": 80,
+        "elements": [
+            {
+                "id": "e1",
+                "type": "button",
+                "label": "OK",
+                "box": {"x": 4, "y": 4, "w": 20, "h": 12},
+                "parentId": None,
+            }
+        ],
+        "flags": [],
+    }
+
+    def fake_extract(raw, *, config, mime_type="image/png", progress=None, cancel_event=None):
+        return layout, "gemini-2.5-flash"
+
+    monkeypatch.setattr(
+        "synthetic_text_extruder.extract_layout.extract_layout_from_image_bytes",
+        fake_extract,
+    )
+
+    res = api.create_creation(
+        "Prompt",
+        "General",
+        "Custom",
+        True,
+        "extract the layout",
+        "doc_studio_extract",
+    )
+    assert res["ok"] is True, res
+    job = _wait_job(api, res["job_id"])
+    assert job["status"] == "done", job
+    assert job["result"]["id"] == "doc_studio_extract"
+    assert get_extracted_layout(job["result"])["elements"][0]["label"] == "OK"
+    stored = next(c for c in api.store.load() if c["id"] == "doc_studio_extract")
+    assert get_extracted_layout(stored)["elements"][0]["id"] == "e1"
+
+
 def test_replace_creation_media_clears_layout(tmp_path, monkeypatch):
     api = _api_with_tmp_store(tmp_path, monkeypatch)
     (tmp_path / "media").mkdir(parents=True, exist_ok=True)
@@ -330,3 +389,95 @@ def test_resolve_basis_media_includes_extracted_layout(tmp_path, monkeypatch):
     assert payload["modality"] == "image"
     assert payload["extracted_layout"]["isUi"] is True
     assert payload["bytes"]
+    assert payload["source_creation"]["id"] == "doc_layout_basis"
+
+
+def test_generate_creation_extracts_layout_from_studio_basis(monkeypatch):
+    from synthetic_text_extruder.generator import generate_creation
+
+    source = build_media_creation(
+        modality="image",
+        prompt="dialog",
+        media_path="media/shot.png",
+        mime_type="image/png",
+        title="Shot",
+        creation_id="doc_studio_layout",
+    )
+    layout = {
+        "isUi": True,
+        "confidence": 0.9,
+        "width": 100,
+        "height": 80,
+        "elements": [
+            {
+                "id": "ok",
+                "type": "button",
+                "label": "OK",
+                "box": {"x": 4, "y": 4, "w": 20, "h": 12},
+                "parentId": None,
+            }
+        ],
+        "flags": [],
+    }
+
+    def fake_extract(raw, *, config, mime_type="image/png", progress=None, cancel_event=None):
+        assert raw
+        return layout, "gemini-2.5-flash"
+
+    monkeypatch.setattr(
+        "synthetic_text_extruder.extract_layout.extract_layout_from_image_bytes",
+        fake_extract,
+    )
+
+    def fail_generate(*_args, **_kwargs):
+        raise AssertionError("layout extract must not call generate_with_gemini")
+
+    monkeypatch.setattr(
+        "synthetic_text_extruder.gemini_provider.generate_with_gemini",
+        fail_generate,
+    )
+
+    result = generate_creation(
+        game="Prompt",
+        platform="General",
+        creation_type="Custom",
+        config={
+            "backend": {"provider": "gemini"},
+            "gemini": {"text_model": "gemini-2.5-flash", "api_key": "test-key"},
+        },
+        exact_title=True,
+        creation_description="extract the layout",
+        basis_media={
+            "modality": "image",
+            "bytes": b"\x89PNG\r\n\x1a\nfake",
+            "mime_type": "image/png",
+            "creation_id": source["id"],
+            "source_creation": source,
+        },
+    )
+    assert result["id"] == "doc_studio_layout"
+    assert result["modality"] == "image"
+    stored = get_extracted_layout(result)
+    assert stored["elements"][0]["label"] == "OK"
+    assert result["meta"]["layoutExtractionModel"] == "gemini-2.5-flash"
+
+
+def test_generate_creation_extract_layout_requires_basis():
+    from synthetic_text_extruder.generator import generate_creation
+
+    try:
+        generate_creation(
+            game="Prompt",
+            platform="General",
+            creation_type="Custom",
+            config={
+                "backend": {"provider": "gemini"},
+                "gemini": {"text_model": "gemini-2.5-flash", "api_key": "test-key"},
+            },
+            exact_title=True,
+            creation_description="extract the layout",
+        )
+    except RuntimeError as exc:
+        assert "Studio basis" in str(exc)
+    else:
+        raise AssertionError("expected RuntimeError when no media basis")

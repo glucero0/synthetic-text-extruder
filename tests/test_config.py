@@ -16,6 +16,7 @@ from synthetic_text_extruder.config import (
     normalize_google_workspace_cfg,
     normalize_media_folder,
     normalize_studio_basis_width,
+    normalize_ui_font_size,
     prompts_path,
     save_config,
 )
@@ -130,6 +131,31 @@ def test_normalize_media_folder_keeps_other_absolute(tmp_path):
     assert normalize_media_folder(str(other)) == str(other)
 
 
+def test_save_config_persists_gemini_api_key(tmp_path, monkeypatch):
+    dest = tmp_path / "config.yaml"
+    monkeypatch.setattr("synthetic_text_extruder.config.DEFAULT_CONFIG_PATH", dest)
+    existing = copy.deepcopy(DEFAULTS)
+    out = save_config({"gemini": {"api_key": "new-key-123"}}, existing=existing)
+    assert out["gemini"]["api_key"] == "new-key-123"
+    written = yaml.safe_load(dest.read_text(encoding="utf-8"))
+    assert written["gemini"]["api_key"] == "new-key-123"
+
+    out2 = save_config({"gemini": {"api_key": ""}}, existing=out)
+    assert out2["gemini"]["api_key"] == "new-key-123"
+    written2 = yaml.safe_load(dest.read_text(encoding="utf-8"))
+    assert written2["gemini"]["api_key"] == "new-key-123"
+
+
+def test_settings_html_exposes_gemini_api_key_fields():
+    html = (PROJECT_ROOT / "synthetic_text_extruder" / "ui" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    assert 'id="gemini-key"' in html
+    assert 'id="gemini-key-google"' in html
+    assert 'id="btn-save-gemini-key"' in html
+    assert 'id="btn-save-gemini-key-google"' in html
+
+
 def test_save_config_persists_paths_media(tmp_path, monkeypatch):
     dest = tmp_path / "config.yaml"
     monkeypatch.setattr("synthetic_text_extruder.config.DEFAULT_CONFIG_PATH", dest)
@@ -164,6 +190,29 @@ def test_normalize_gemini_model():
     assert normalize_gemini_model(None) == "gemini-2.5-flash"
 
 
+def test_normalize_ui_font_size():
+    assert normalize_ui_font_size(13) == 13
+    assert normalize_ui_font_size(11) == 11
+    assert normalize_ui_font_size(22) == 22
+    assert normalize_ui_font_size(8) == 11
+    assert normalize_ui_font_size(40) == 22
+    assert normalize_ui_font_size("nope") == 13
+    assert normalize_ui_font_size(None) == 13
+
+
+def test_save_config_persists_ui_font_size(tmp_path, monkeypatch):
+    dest = tmp_path / "config.yaml"
+    monkeypatch.setattr("synthetic_text_extruder.config.DEFAULT_CONFIG_PATH", dest)
+    existing = copy.deepcopy(DEFAULTS)
+    out = save_config({"ui": {"ui_font_size": 16}}, existing=existing)
+    assert out["ui"]["ui_font_size"] == 16
+    written = yaml.safe_load(dest.read_text(encoding="utf-8"))
+    assert written["ui"]["ui_font_size"] == 16
+
+    out2 = save_config({"ui": {"ui_font_size": 3}}, existing=out)
+    assert out2["ui"]["ui_font_size"] == 11
+
+
 def test_normalize_studio_basis_width():
     assert normalize_studio_basis_width(440) == 440
     assert normalize_studio_basis_width(50) == 160
@@ -189,6 +238,7 @@ def test_ui_app_theme_defaults():
     ui = DEFAULTS["ui"]
     assert ui["app_theme"] == "light"
     assert ui["ui_font"] == "inter"
+    assert ui["ui_font_size"] == 13
     assert ui["studio_basis_width"] == 280
     custom = ui["custom_theme"]
     assert custom["desktop_color"] == "#008080"
@@ -203,6 +253,7 @@ def test_load_config_preserves_app_theme_keys():
     ui = cfg.get("ui") or {}
     assert "app_theme" in ui
     assert "ui_font" in ui
+    assert "ui_font_size" in ui
     assert ui["app_theme"] in {"light", "dark"} or isinstance(ui["app_theme"], str)
     custom = ui.get("custom_theme") or {}
     for key in (
