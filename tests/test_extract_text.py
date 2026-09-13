@@ -1,4 +1,4 @@
-"""Tests for Viewer Extract Text (OCR / transcription) helpers and API."""
+"""Tests for Studio text extract / transcription helpers and API."""
 
 from __future__ import annotations
 
@@ -78,7 +78,7 @@ def test_export_creation_txt_uses_extracted_for_media(tmp_path, monkeypatch):
         title="Sign",
         creation_id="doc_a",
     )
-    with pytest.raises(RuntimeError, match="Extract Text"):
+    with pytest.raises(RuntimeError, match="extract the text"):
         api.export_creation_txt(creation)
 
     creation = apply_extraction_fields(
@@ -170,3 +170,119 @@ def test_extract_creation_text_job_persists(tmp_path, monkeypatch):
     assert get_extracted_text(job["result"]) == "OCR RESULT"
     stored = next(c for c in api.store.load() if c["id"] == "doc_img2")
     assert get_extracted_text(stored) == "OCR RESULT"
+
+
+def test_create_creation_extract_text_from_studio_prompt(tmp_path, monkeypatch):
+    api = _api_with_tmp_store(tmp_path, monkeypatch)
+    media_dir = tmp_path / "media"
+    media_dir.mkdir(parents=True, exist_ok=True)
+    (media_dir / "doc_studio_ocr.png").write_bytes(b"\x89PNG\r\n\x1a\nfake")
+    creation = build_media_creation(
+        modality="image",
+        prompt="sign",
+        media_path="media/doc_studio_ocr.png",
+        mime_type="image/png",
+        title="Shot",
+        creation_id="doc_studio_ocr",
+    )
+    api.store.upsert(creation)
+
+    def fake_extract(creation, *, config, media_path, progress=None, cancel_event=None):
+        return apply_extraction_fields(
+            creation,
+            text="OCR FROM STUDIO",
+            kind="ocr",
+            model="gemini-2.5-flash",
+            provider="gemini",
+        )
+
+    monkeypatch.setattr(
+        "synthetic_text_extruder.extract_text.extract_text_from_creation",
+        fake_extract,
+    )
+
+    res = api.create_creation(
+        "Prompt",
+        "General",
+        "Custom",
+        True,
+        "extract the text",
+        "doc_studio_ocr",
+    )
+    assert res["ok"] is True, res
+    job = _wait_job(api, res["job_id"])
+    assert job["status"] == "done", job
+    assert job["result"]["id"] == "doc_studio_ocr"
+    assert get_extracted_text(job["result"]) == "OCR FROM STUDIO"
+    assert job["result"]["meta"]["studioJob"] == "extract"
+    stored = next(c for c in api.store.load() if c["id"] == "doc_studio_ocr")
+    assert get_extracted_text(stored) == "OCR FROM STUDIO"
+
+
+def test_create_creation_transcribe_from_studio_prompt(tmp_path, monkeypatch):
+    api = _api_with_tmp_store(tmp_path, monkeypatch)
+    media_dir = tmp_path / "media"
+    media_dir.mkdir(parents=True, exist_ok=True)
+    (media_dir / "doc_studio_talk.mp4").write_bytes(b"fake-mp4")
+    creation = build_media_creation(
+        modality="video",
+        prompt="talk",
+        media_path="media/doc_studio_talk.mp4",
+        mime_type="video/mp4",
+        title="Talk",
+        creation_id="doc_studio_talk",
+    )
+    api.store.upsert(creation)
+
+    def fake_extract(creation, *, config, media_path, progress=None, cancel_event=None):
+        return apply_extraction_fields(
+            creation,
+            text="HELLO FROM THE CLIP",
+            kind="transcript",
+            model="gemini-2.5-flash",
+            provider="gemini",
+        )
+
+    monkeypatch.setattr(
+        "synthetic_text_extruder.extract_text.extract_text_from_creation",
+        fake_extract,
+    )
+    monkeypatch.setattr(
+        "synthetic_text_extruder.video_edit.extract_video_frame_png",
+        lambda *a, **k: b"\x89PNG\r\n\x1a\nframe",
+    )
+
+    res = api.create_creation(
+        "Prompt",
+        "General",
+        "Custom",
+        True,
+        "transcribe this video",
+        "doc_studio_talk",
+    )
+    assert res["ok"] is True, res
+    job = _wait_job(api, res["job_id"])
+    assert job["status"] == "done", job
+    assert get_extracted_text(job["result"]) == "HELLO FROM THE CLIP"
+    assert job["result"]["meta"]["extractionKind"] == "transcript"
+
+
+def test_generate_creation_extract_text_requires_basis():
+    from synthetic_text_extruder.generator import generate_creation
+
+    try:
+        generate_creation(
+            game="Prompt",
+            platform="General",
+            creation_type="Custom",
+            config={
+                "backend": {"provider": "gemini"},
+                "gemini": {"text_model": "gemini-2.5-flash", "api_key": "test-key"},
+            },
+            exact_title=True,
+            creation_description="extract the text",
+        )
+    except RuntimeError as exc:
+        assert "Studio basis" in str(exc)
+    else:
+        raise AssertionError("expected RuntimeError when no media basis")

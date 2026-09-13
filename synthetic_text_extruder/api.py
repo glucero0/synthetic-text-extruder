@@ -556,7 +556,11 @@ class Api:
             }
 
         from .generator import _active_model_and_provider
-        from .modality import check_prompt_model_compatibility
+        from .modality import (
+            check_prompt_model_compatibility,
+            infer_layout_extract_intent,
+            infer_text_extract_intent,
+        )
 
         desc_preview = (creation_description or "").strip() or game
         basis_id = (basis_creation_id or "").strip()
@@ -567,7 +571,11 @@ class Api:
             except Exception as exc:  # noqa: BLE001
                 return {"ok": False, "error": str(exc)}
             bmod = (basis_media or {}).get("modality")
-            if bmod == "image":
+            if infer_layout_extract_intent(desc_preview) or infer_text_extract_intent(
+                desc_preview
+            ):
+                pass
+            elif bmod == "image":
                 desc_preview = f"Create an image: {desc_preview}"
             elif bmod == "video":
                 desc_preview = f"Generate a video: {desc_preview}"
@@ -799,7 +807,7 @@ class Api:
             if extracted:
                 return extracted + ("\n" if not extracted.endswith("\n") else "")
             raise RuntimeError(
-                f"TXT export is not available for {modality} creations until you run Extract Text…"
+                f"TXT export is not available for {modality} creations until you extract the text in Creation Studio."
             )
         # Audio: lyrics/structure from Lyria live in sections.
 
@@ -1084,6 +1092,7 @@ class Api:
                 "bytes": raw,
                 "mime_type": mime or "image/png",
                 "creation_id": cid,
+                "source_creation": dict(source),
             }
         else:
             # Video basis: use a still frame as image reference for I2V / edit flows
@@ -1101,6 +1110,7 @@ class Api:
                 "mime_type": "image/png",
                 "creation_id": cid,
                 "source_modality": "video",
+                "source_creation": dict(source),
             }
         from .extract_layout import get_extracted_layout
 

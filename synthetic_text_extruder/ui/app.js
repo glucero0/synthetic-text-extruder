@@ -19,6 +19,7 @@
     crtEnabled: false,
     uiScale: 1,
     uiFont: "inter",
+    uiFontSize: 13,
     retiredGeminiModels: [],
     config: null,
     viewerTab: "doc",
@@ -171,6 +172,10 @@
   };
 
   const _loadedUiFontLinks = Object.create(null);
+  const UI_FONT_SIZE_MIN = 11;
+  const UI_FONT_SIZE_MAX = 22;
+  const UI_FONT_SIZE_DEFAULT = 13;
+  const UI_FONT_SIZE_OPTIONS = [11, 12, 13, 14, 16, 18];
 
   function resolveUiFontKey(font) {
     const raw = String(font || "").trim().toLowerCase();
@@ -203,6 +208,55 @@
     document.documentElement.style.setProperty("--ui-font", meta.stack);
     document.documentElement.setAttribute("data-ui-font", key);
     if ($("#ui-font")) $("#ui-font").value = key;
+  }
+
+  function parseUiFontSize(raw) {
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return UI_FONT_SIZE_DEFAULT;
+    return Math.round(Math.max(UI_FONT_SIZE_MIN, Math.min(UI_FONT_SIZE_MAX, n)));
+  }
+
+  function applyUiFontSize(size) {
+    const px = parseUiFontSize(size);
+    state.uiFontSize = px;
+    document.documentElement.style.setProperty("--ui-font-size", px + "px");
+    document.documentElement.setAttribute("data-ui-font-size", String(px));
+    const sel = $("#ui-font-size");
+    if (sel) {
+      const values = Array.from(sel.options).map((opt) => Number(opt.value));
+      if (!values.includes(px)) {
+        const opt = document.createElement("option");
+        opt.value = String(px);
+        opt.textContent = px + " px";
+        sel.appendChild(opt);
+      }
+      sel.value = String(px);
+    }
+  }
+
+  function fillUiFontSizeSelect() {
+    const sel = $("#ui-font-size");
+    if (!sel) return;
+    const prev = parseUiFontSize(sel.value || state.uiFontSize || UI_FONT_SIZE_DEFAULT);
+    const labels = {
+      11: "Small (11)",
+      12: "12",
+      13: "Default (13)",
+      14: "14",
+      16: "Large (16)",
+      18: "Extra large (18)",
+    };
+    sel.innerHTML = "";
+    const sizes = UI_FONT_SIZE_OPTIONS.slice();
+    if (!sizes.includes(prev)) sizes.push(prev);
+    sizes.sort((a, b) => a - b);
+    sizes.forEach((px) => {
+      const opt = document.createElement("option");
+      opt.value = String(px);
+      opt.textContent = labels[px] || px + " px";
+      sel.appendChild(opt);
+    });
+    sel.value = String(prev);
   }
 
   function fillUiFontSelect() {
@@ -1291,13 +1345,13 @@
     if (loadHint) {
       if (!enabled) {
         loadHint.textContent =
-          "Menu → Load Text puts text in the prompt. Menu → Load Image / Video sets a media basis on the right (drag the divider to resize) — then describe the change and CREATE. On an image or video in Viewer, Extract Layout… finds UI regions; Use as Basis then sends the screenshot plus layout JSON so Studio can recreate it as HTML/CSS or an app (or another mockup if you ask for an image). For a song, Use as Basis reloads the prompt and lyrics as text — not the MP3.";
+          "Menu → Load Text puts text in the prompt. Menu → Load Image / Video sets a media basis on the right (drag the divider to resize) — then describe the change and CREATE. Send a screenshot or clip from Viewer (Use as Basis) or the image/video editor (Save and Send to Creator), then prompt extract the text, transcribe, or extract the layout. After a layout extract, ask Studio to recreate the UI as HTML/CSS or an app (or another mockup if you ask for an image). For a song, Use as Basis reloads the prompt and lyrics as text — not the MP3.";
       } else if (searchOn) {
         loadHint.textContent =
-          "Menu → Load Text puts text in Search (optional). Menu → Load Image / Video sets a media basis on the right (drag the divider to resize) — then describe the change and CREATE. On an image or video in Viewer, Extract Layout… finds UI regions; Use as Basis then sends the screenshot plus layout JSON so Studio can recreate it as HTML/CSS or an app (or another mockup if you ask for an image). For a song, Use as Basis reloads the prompt and lyrics as text — not the MP3.";
+          "Menu → Load Text puts text in Search (optional). Menu → Load Image / Video sets a media basis on the right (drag the divider to resize) — then describe the change and CREATE. Send a screenshot or clip from Viewer (Use as Basis) or the image/video editor (Save and Send to Creator), then prompt extract the text, transcribe, or extract the layout. After a layout extract, ask Studio to recreate the UI as HTML/CSS or an app (or another mockup if you ask for an image). For a song, Use as Basis reloads the prompt and lyrics as text — not the MP3.";
       } else {
         loadHint.textContent =
-          "Google Search is off — only Tool Use runs. Menu → Load Image / Video sets a media basis on the right (drag the divider to resize) — then describe the change and CREATE. On an image or video in Viewer, Extract Layout… finds UI regions; Use as Basis then sends the screenshot plus layout JSON so Studio can recreate it as HTML/CSS or an app (or another mockup if you ask for an image). For a song, Use as Basis reloads the prompt and lyrics as text — not the MP3.";
+          "Google Search is off — only Tool Use runs. Menu → Load Image / Video sets a media basis on the right (drag the divider to resize) — then describe the change and CREATE. Send a screenshot or clip from Viewer (Use as Basis) or the image/video editor (Save and Send to Creator), then prompt extract the text, transcribe, or extract the layout. After a layout extract, ask Studio to recreate the UI as HTML/CSS or an app (or another mockup if you ask for an image). For a song, Use as Basis reloads the prompt and lyrics as text — not the MP3.";
       }
     }
     renderStudioToolsList();
@@ -1472,9 +1526,7 @@
         }
       }
       updateApiKeyIndicators();
-      if ($("#gemini-key") && document.activeElement !== $("#gemini-key")) {
-        $("#gemini-key").value = "";
-      }
+      clearGeminiApiKeyInputsIfIdle();
       syncStudioToolsPanel();
     }
 
@@ -2021,22 +2073,11 @@
   }
 
   function rememberStudioCaret(el) {
-    if (!el) return;
-    let start;
-    let end;
-    if (ime.target === el) {
-      start = ime.selStart;
-      end = ime.selEnd;
-    } else if (typeof el.selectionStart === "number") {
-      start = el.selectionStart;
-      end = el.selectionEnd;
-    } else {
-      return;
-    }
+    if (!el || typeof el.selectionStart !== "number") return;
     state.studioCaret = {
       fieldId: el.id,
-      start: start,
-      end: end,
+      start: el.selectionStart,
+      end: el.selectionEnd,
     };
   }
 
@@ -2231,7 +2272,7 @@
       layout
         ? "Screenshot plus extracted layout loaded into Studio. Describe the app or mockup to build, then CREATE."
         : (mod === "image" ? "Image" : "Video") +
-            " loaded as Studio basis — describe the change, then CREATE."
+            " loaded as Studio basis — describe the change, or prompt extract the text, transcribe, or extract the layout, then CREATE."
     );
   }
 
@@ -2250,7 +2291,7 @@
     openWindow("form");
     showToast(
       (mod === "image" ? "Image" : "Video") +
-        " sent to Creation Studio — describe the change, then CREATE. The new result is saved as its own Archive item."
+        " sent to Creation Studio — describe the change and CREATE for a new Archive item, or prompt extract the text, transcribe, or extract the layout."
     );
     return true;
   }
@@ -2461,7 +2502,7 @@
       openWindow("form");
       showToast(
         (modality === "image" ? "Image" : "Video") +
-          " loaded as Studio basis — describe the change, then CREATE."
+          " loaded as Studio basis — describe the change, or prompt extract the text, transcribe, or extract the layout, then CREATE."
       );
     } catch (err) {
       showToast("Load failed: " + err);
@@ -2553,9 +2594,9 @@
     if (layer) layer.appendChild(el);
   }
 
-  // Native <textarea> carets (and the Windows Ease of Access "text cursor"
-  // indicator) paint in screen space above every window. Keep keyboard focus on
-  // a non-text trap and draw a caret clipped inside the field's app window.
+  // Fields use the native caret, selection, and editing shortcuts. The old
+  // custom IME existed to hide Windows' overlay caret above stacked Win98
+  // windows; this app shows one screen at a time.
   const ime = {
     trap: null,
     caretEl: null,
@@ -2567,7 +2608,7 @@
   };
 
   function isImeField(el) {
-    if (!el || el === ime.trap) return false;
+    if (!el) return false;
     if (!el.closest || !el.closest(".app-window")) return false;
     if (el.disabled || el.readOnly) return false;
     const tag = (el.tagName || "").toLowerCase();
@@ -2577,485 +2618,28 @@
     return type === "text" || type === "password" || type === "search" || type === "url" || type === "email";
   }
 
-  function imeGetSel(field) {
-    if (ime.target === field) {
-      let start = ime.selStart;
-      let end = ime.selEnd;
-      if (end < start) {
-        const t = start;
-        start = end;
-        end = t;
-      }
-      return { start: start, end: end };
-    }
-    let start = field.selectionStart;
-    let end = field.selectionEnd;
-    if (typeof start !== "number") start = (field.value || "").length;
-    if (typeof end !== "number") end = start;
-    if (end < start) {
-      const t = start;
-      start = end;
-      end = t;
-    }
-    return { start: start, end: end };
-  }
-
-  function imeSetSel(field, start, end) {
-    const valueLen = (field.value || "").length;
-    let s = Math.max(0, Math.min(valueLen, start));
-    let e = end == null ? s : Math.max(0, Math.min(valueLen, end));
-    ime.selStart = s;
-    ime.selEnd = e;
-    try {
-      field.selectionStart = s;
-      field.selectionEnd = e;
-    } catch (_err) {
-      /* unfocused inputs may reject selection */
-    }
-  }
-
-  function imeReplace(field, start, end, text) {
-    const value = field.value || "";
-    field.value = value.slice(0, start) + text + value.slice(end);
-    const pos = start + String(text).length;
-    imeSetSel(field, pos, pos);
-    field.dispatchEvent(new Event("input", { bubbles: true }));
-    if (typeof field.selectionStart === "number") rememberStudioCaret(field);
-    syncImeCaret();
-  }
-
-  function imeLineInfo(value, pos) {
-    const lineStart = value.lastIndexOf("\n", pos - 1) + 1;
-    const nl = value.indexOf("\n", pos);
-    const lineEnd = nl < 0 ? value.length : nl;
-    return { lineStart: lineStart, lineEnd: lineEnd, col: pos - lineStart };
-  }
-
-  function handleImeKeydown(e) {
-    const field = ime.target;
-    if (!field) return;
-    const active = document.activeElement;
-    if (
-      active &&
-      active !== ime.trap &&
-      active !== field &&
-      active !== document.body &&
-      active !== document.documentElement
-    ) {
-      const tag = (active.tagName || "").toLowerCase();
-      if (tag === "button" || tag === "select" || tag === "option" || tag === "a") return;
-      if (isImeField(active) && active !== field) return;
-    }
-    if (e.isComposing) return;
-    const key = e.key;
-    const sel = imeGetSel(field);
-    const value = field.value || "";
-    const ctrl = e.ctrlKey || e.metaKey;
-
-    if (key === "Tab") {
-      e.preventDefault();
-      const next = nextImeField(field, e.shiftKey);
-      if (next) attachIme(next);
-      else detachIme();
-      return;
-    }
-    if (ctrl && key.toLowerCase() === "a") {
-      e.preventDefault();
-      imeSetSel(field, 0, value.length);
-      rememberStudioCaret(field);
-      syncImeCaret();
-      return;
-    }
-    if (ctrl && key.toLowerCase() === "c") {
-      e.preventDefault();
-      const text = value.slice(sel.start, sel.end);
-      if (text && field.type !== "password") {
-        navigator.clipboard.writeText(text).catch(() => {});
-      }
-      return;
-    }
-    if (ctrl && key.toLowerCase() === "x") {
-      e.preventDefault();
-      const text = value.slice(sel.start, sel.end);
-      if (text && field.type !== "password") {
-        navigator.clipboard.writeText(text).catch(() => {});
-      }
-      imeReplace(field, sel.start, sel.end, "");
-      return;
-    }
-    if (ctrl && key.toLowerCase() === "v") {
-      e.preventDefault();
-      navigator.clipboard
-        .readText()
-        .then((text) => imeReplace(field, sel.start, sel.end, text || ""))
-        .catch(() => {});
-      return;
-    }
-    if (ctrl) return;
-
-    if (key === "Backspace") {
-      e.preventDefault();
-      if (sel.start !== sel.end) imeReplace(field, sel.start, sel.end, "");
-      else if (sel.start > 0) imeReplace(field, sel.start - 1, sel.start, "");
-      return;
-    }
-    if (key === "Delete") {
-      e.preventDefault();
-      if (sel.start !== sel.end) imeReplace(field, sel.start, sel.end, "");
-      else if (sel.end < value.length) imeReplace(field, sel.start, sel.start + 1, "");
-      return;
-    }
-    if (key === "Enter") {
-      e.preventDefault();
-      if (field.tagName === "TEXTAREA") imeReplace(field, sel.start, sel.end, "\n");
-      return;
-    }
-    if (key === "Home") {
-      e.preventDefault();
-      const info = imeLineInfo(value, sel.start);
-      if (e.shiftKey) imeSetSel(field, info.lineStart, sel.end);
-      else imeSetSel(field, info.lineStart, info.lineStart);
-      rememberStudioCaret(field);
-      syncImeCaret();
-      return;
-    }
-    if (key === "End") {
-      e.preventDefault();
-      const info = imeLineInfo(value, sel.end);
-      if (e.shiftKey) imeSetSel(field, sel.start, info.lineEnd);
-      else imeSetSel(field, info.lineEnd, info.lineEnd);
-      rememberStudioCaret(field);
-      syncImeCaret();
-      return;
-    }
-    if (key === "ArrowLeft") {
-      e.preventDefault();
-      if (e.shiftKey) imeSetSel(field, Math.max(0, sel.start - 1), sel.end);
-      else if (sel.start !== sel.end) imeSetSel(field, sel.start, sel.start);
-      else {
-        const next = Math.max(0, sel.start - 1);
-        imeSetSel(field, next, next);
-      }
-      rememberStudioCaret(field);
-      syncImeCaret();
-      return;
-    }
-    if (key === "ArrowRight") {
-      e.preventDefault();
-      if (e.shiftKey) imeSetSel(field, sel.start, Math.min(value.length, sel.end + 1));
-      else if (sel.start !== sel.end) imeSetSel(field, sel.end, sel.end);
-      else {
-        const next = Math.min(value.length, sel.end + 1);
-        imeSetSel(field, next, next);
-      }
-      rememberStudioCaret(field);
-      syncImeCaret();
-      return;
-    }
-    if (key === "ArrowUp" || key === "ArrowDown") {
-      e.preventDefault();
-      const dir = key === "ArrowUp" ? -1 : 1;
-      const pos = dir < 0 ? sel.start : sel.end;
-      const info = imeLineInfo(value, pos);
-      let target;
-      if (dir < 0) {
-        if (info.lineStart === 0) target = 0;
-        else {
-          const prevEnd = info.lineStart - 1;
-          const prev = imeLineInfo(value, prevEnd);
-          target = Math.min(prev.lineStart + info.col, prevEnd);
-        }
-      } else if (info.lineEnd === value.length) {
-        target = value.length;
-      } else {
-        const nextStart = info.lineEnd + 1;
-        const next = imeLineInfo(value, nextStart);
-        target = Math.min(next.lineStart + info.col, next.lineEnd);
-      }
-      if (e.shiftKey) {
-        if (dir < 0) imeSetSel(field, target, sel.end);
-        else imeSetSel(field, sel.start, target);
-      } else {
-        imeSetSel(field, target, target);
-      }
-      rememberStudioCaret(field);
-      syncImeCaret();
-      return;
-    }
-    if (key.length === 1) {
-      e.preventDefault();
-      imeReplace(field, sel.start, sel.end, key);
-    }
-  }
-
-  function ensureImeBridge() {
-    if (ime.trap) return;
-    const trap = document.createElement("button");
-    trap.id = "ime-focus";
-    trap.type = "button";
-    trap.tabIndex = -1;
-    trap.setAttribute("aria-label", "Text cursor");
-    document.body.appendChild(trap);
-    ime.trap = trap;
-    document.addEventListener("keydown", handleImeKeydown, true);
-
-    const caret = document.createElement("div");
-    caret.id = "ime-caret";
-    caret.hidden = true;
-    caret.setAttribute("aria-hidden", "true");
-    document.body.appendChild(caret);
-    ime.caretEl = caret;
-
-    document.addEventListener(
-      "pointerdown",
-      (e) => {
-        if (e.button !== 0) return;
-        const el = imeFieldFromEvent(e);
-        if (!el) {
-          ime.drag = null;
-          return;
-        }
-        // Do not let the native field take focus — that summons the Windows
-        // text-cursor indicator at this screen position, on top of every window.
-        e.preventDefault();
-        const win = el.closest(".app-window");
-        if (win && win.dataset.window) focusWindow(win.dataset.window);
-        const idx = indexFromClientPoint(el, e.clientX, e.clientY);
-        attachIme(el);
-        imeSetSel(el, idx, idx);
-        ime.drag = { field: el, anchor: idx };
-        rememberStudioCaret(el);
-        syncImeCaret();
-      },
-      true
-    );
-    document.addEventListener(
-      "pointermove",
-      (e) => {
-        if (!ime.drag || !(e.buttons & 1)) return;
-        const el = ime.drag.field;
-        const idx = indexFromClientPoint(el, e.clientX, e.clientY);
-        const a = ime.drag.anchor;
-        imeSetSel(el, Math.min(a, idx), Math.max(a, idx));
-        rememberStudioCaret(el);
-        syncImeCaret();
-      },
-      true
-    );
-    const endImeDrag = () => {
-      ime.drag = null;
-    };
-    document.addEventListener("pointerup", endImeDrag, true);
-    document.addEventListener("pointercancel", endImeDrag, true);
-
-    const watchImeFocus = () => {
-      const el = document.activeElement;
-      if (isImeField(el)) attachIme(el);
-      requestAnimationFrame(watchImeFocus);
-    };
-    requestAnimationFrame(watchImeFocus);
-  }
-
-  function nextImeField(from, backwards) {
-    const win = from.closest(".app-window");
-    if (!win) return null;
-    const list = [...win.querySelectorAll("textarea, input")].filter(isImeField);
-    const idx = list.indexOf(from);
-    if (idx < 0) return null;
-    const next = backwards ? list[idx - 1] : list[idx + 1];
-    return next || null;
-  }
-
-  function getFieldCaretViewportRect(el, pos) {
-    if (!el) return null;
-    if (typeof pos !== "number") {
-      if (typeof el.selectionEnd !== "number") return null;
-      pos = el.selectionEnd;
-    }
-    const style = window.getComputedStyle(el);
-    const div = document.createElement("div");
-    const props = [
-      "direction",
-      "boxSizing",
-      "width",
-      "overflowX",
-      "overflowY",
-      "borderTopWidth",
-      "borderRightWidth",
-      "borderBottomWidth",
-      "borderLeftWidth",
-      "paddingTop",
-      "paddingRight",
-      "paddingBottom",
-      "paddingLeft",
-      "fontStyle",
-      "fontVariant",
-      "fontWeight",
-      "fontStretch",
-      "fontSize",
-      "lineHeight",
-      "fontFamily",
-      "textAlign",
-      "textTransform",
-      "textIndent",
-      "letterSpacing",
-      "wordSpacing",
-      "tabSize",
-      "whiteSpace",
-      "wordWrap",
-      "wordBreak",
-    ];
-    div.style.position = "absolute";
-    div.style.visibility = "hidden";
-    div.style.left = "-9999px";
-    div.style.top = "0";
-    props.forEach((p) => {
-      div.style[p] = style[p];
-    });
-    div.style.whiteSpace = el.tagName === "TEXTAREA" ? "pre-wrap" : "pre";
-    div.style.wordWrap = "break-word";
-    div.style.overflow = "hidden";
-    div.style.width = el.clientWidth + "px";
-    div.textContent = el.value.substring(0, pos);
-    const marker = document.createElement("span");
-    marker.textContent = "\u200b";
-    div.appendChild(marker);
-    document.body.appendChild(div);
-    const fieldRect = el.getBoundingClientRect();
-    const scale = uiZoomFactor();
-    const localX =
-      marker.offsetLeft - el.scrollLeft + (parseFloat(style.borderLeftWidth) || 0);
-    const localY =
-      marker.offsetTop - el.scrollTop + (parseFloat(style.borderTopWidth) || 0);
-    const left = fieldRect.left + localX * scale;
-    const top = fieldRect.top + localY * scale;
-    let height = parseFloat(style.lineHeight);
-    if (!Number.isFinite(height) || height <= 0) {
-      height = parseFloat(style.fontSize) * 1.2 || 16;
-    }
-    height *= scale;
-    div.remove();
-    return { left: left, top: top, height: height };
-  }
-
-  function indexFromClientPoint(el, clientX, clientY) {
-    const n = (el.value || "").length;
-    if (n === 0) return 0;
-    let lo = 0;
-    let hi = n;
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1;
-      const rect = getFieldCaretViewportRect(el, mid);
-      if (!rect) return mid;
-      if (clientY > rect.top + rect.height) lo = mid + 1;
-      else if (clientY < rect.top) hi = mid;
-      else if (clientX > rect.left) lo = mid + 1;
-      else hi = mid;
-    }
-    return lo;
-  }
-
-  function imeFieldFromEvent(e) {
-    const t = e.target;
-    if (!t || !t.closest) return null;
-    const direct = t.closest("textarea, input");
-    if (isImeField(direct)) return direct;
-    const label = t.closest("label");
-    if (!label) return null;
-    const control = label.control || (label.htmlFor ? document.getElementById(label.htmlFor) : null);
-    return isImeField(control) ? control : null;
-  }
-
-  function syncImeCaret() {
-    ensureImeBridge();
-    const field = ime.target;
-    const caret = ime.caretEl;
-    if (!caret) return;
-    if (!field) {
-      caret.hidden = true;
-      return;
-    }
-    const win = field.closest(".app-window");
-    if (!win || win.hidden || win.classList.contains("minimized")) {
-      caret.hidden = true;
-      return;
-    }
-    if (state.focused !== win.dataset.window) {
-      caret.hidden = true;
-      return;
-    }
-    const sel = imeGetSel(field);
-    if (sel.start !== sel.end) {
-      caret.hidden = true;
-      return;
-    }
-    const rect = getFieldCaretViewportRect(field, sel.end);
-    if (!rect) {
-      caret.hidden = true;
-      return;
-    }
-    const fieldRect = field.getBoundingClientRect();
-    const scale = uiZoomFactor();
-    let left = (rect.left - fieldRect.left) / scale;
-    let top = (rect.top - fieldRect.top) / scale;
-    let height = rect.height / scale;
-    if (height < 8) height = parseFloat(window.getComputedStyle(field).fontSize) * 1.2 || 12;
-    if (left < 0) left = 0;
-    if (top < 0) top = 0;
-    if (left > field.clientWidth) left = Math.max(0, field.clientWidth - 2);
-    if (top > field.clientHeight - 2) top = Math.max(0, field.clientHeight - height);
-    const host = field.parentElement;
-    if (!host) {
-      caret.hidden = true;
-      return;
-    }
-    host.classList.add("ime-caret-host");
-    if (caret.parentElement !== host) host.appendChild(caret);
-    const hostRect = host.getBoundingClientRect();
-    caret.style.left = (fieldRect.left - hostRect.left) / scale + left + "px";
-    caret.style.top = (fieldRect.top - hostRect.top) / scale + top + "px";
-    caret.style.height = height + "px";
-    caret.hidden = false;
-  }
-
   function attachIme(field) {
     if (!isImeField(field)) return;
-    ensureImeBridge();
-    const switching = ime.target !== field;
     ime.target = field;
-    if (switching) {
-      let start = field.selectionStart;
-      let end = field.selectionEnd;
-      if (typeof start !== "number") start = 0;
-      if (typeof end !== "number") end = start;
-      ime.selStart = start;
-      ime.selEnd = end;
-    }
     if (typeof field.selectionStart === "number") rememberStudioCaret(field);
-    if (!field.dataset.imeScroll) {
-      field.dataset.imeScroll = "1";
-      field.addEventListener("scroll", syncImeCaret);
-    }
     try {
-      ime.trap.focus({ preventScroll: true });
+      field.focus({ preventScroll: true });
     } catch (_err) {
-      /* ignore */
+      try { field.focus(); } catch (_err2) { /* ignore */ }
     }
-    ime.resume = null;
-    syncImeCaret();
   }
 
-  function refreshImeField(field) {
-    if (ime.target === field) syncImeCaret();
-  }
+  function refreshImeField(_field) {}
+
+  function syncImeCaret() {}
+
+  function ensureImeBridge() {}
 
   function detachIme(opts) {
     const keepResume = !!(opts && opts.resume);
     if (keepResume && ime.target) ime.resume = ime.target;
     else if (!keepResume) ime.resume = null;
     ime.target = null;
-    if (ime.caretEl) ime.caretEl.hidden = true;
-    if (ime.trap && document.activeElement === ime.trap) ime.trap.blur();
   }
 
   function hideCaretOutsideWindow(id) {
@@ -3071,7 +2655,6 @@
     if (!active || active === document.body || active === document.documentElement) {
       return;
     }
-    if (active === ime.trap) return;
     const host = active.closest(".app-window");
     if (!host) return;
     if (host.dataset.window === id) return;
@@ -3481,7 +3064,7 @@
         suggestedGeminiModels: [],
       });
     }
-    if ($("#gemini-key")) $("#gemini-key").value = "";
+    clearGeminiApiKeyInputs();
     closeWindow("control");
   }
 
@@ -4368,8 +3951,8 @@
       html +=
         '<p class="muted">' +
         (modality === "video"
-          ? "No layout yet. Click <strong>Extract Layout…</strong> to inspect a still frame for windows, buttons, and other chrome."
-          : "No layout yet. Click <strong>Extract Layout…</strong> to look for UI chrome (windows, buttons, fields) and build coordinate data.") +
+          ? "No layout yet. Send this clip to Creation Studio (Use as Basis or Save and Send to Creator), then prompt <strong>extract the layout</strong> to inspect a still frame for windows, buttons, and other chrome."
+          : "No layout yet. Send this image to Creation Studio (Use as Basis or Save and Send to Creator), then prompt <strong>extract the layout</strong> to look for UI chrome (windows, buttons, fields) and build coordinate data.") +
         "</p>";
       html += "</div>";
       return html;
@@ -4497,8 +4080,8 @@
       html +=
         '<p class="muted">' +
         (modality === "video"
-          ? "No transcript yet. Click <strong>Transcribe…</strong> to pull speech (or on-screen text) from this video."
-          : "No text extracted yet. Click <strong>Extract Text…</strong> to OCR this image.") +
+          ? "No transcript yet. Send this clip to Creation Studio (Use as Basis or Save and Send to Creator), then prompt <strong>transcribe</strong> to pull speech (or on-screen text)."
+          : "No text extracted yet. Send this image to Creation Studio (Use as Basis or Save and Send to Creator), then prompt <strong>extract the text</strong> to OCR it.") +
         "</p>";
     } else {
       html +=
@@ -5595,8 +5178,6 @@
     const showVoice = modality === "text";
     const showEditImage = modality === "image";
     const showEditVideo = modality === "video";
-    const showExtract = isMedia && modality !== "audio";
-    const showLayout = showExtract;
     const showMetadata = !!creation;
     const showBasis = !!creation;
 
@@ -5630,20 +5211,6 @@
       $("#btn-export-media").hidden = !showMp4;
       $("#btn-export-media").textContent =
         modality === "audio" ? "Save MP3…" : "Save MP4…";
-    }
-    if ($("#btn-extract-text")) {
-      $("#btn-extract-text").hidden = !showExtract;
-      $("#btn-extract-text").textContent = extracted
-        ? "Re-extract Text…"
-        : modality === "video"
-          ? "Transcribe…"
-          : "Extract Text…";
-    }
-    if ($("#btn-extract-layout")) {
-      $("#btn-extract-layout").hidden = !showLayout;
-      $("#btn-extract-layout").textContent = getExtractedLayout(creation)
-        ? "Re-extract Layout…"
-        : "Extract Layout…";
     }
     if ($("#btn-edit-image")) $("#btn-edit-image").hidden = !showEditImage;
     if ($("#btn-edit-video")) $("#btn-edit-video").hidden = !showEditVideo;
@@ -5791,6 +5358,7 @@
 
     fillAppThemeSelect();
     fillUiFontSelect();
+    fillUiFontSizeSelect();
     const custom = ui.custom_theme || {};
     state.customTheme = {
       desktopColor: normalizeHexColor(custom.desktop_color, "#ffffff"),
@@ -5803,6 +5371,7 @@
       ui.ui_font || (custom.font === "serif" || custom.font === "mono" ? custom.font : null) || "inter"
     );
     applyUiFont(state.uiFont);
+    applyUiFontSize(ui.ui_font_size != null ? ui.ui_font_size : UI_FONT_SIZE_DEFAULT);
     state.appTheme = resolveAppThemeKey(ui.app_theme || "light");
     if ($("#app-theme")) {
       $("#app-theme").value = state.appTheme;
@@ -5923,6 +5492,42 @@
     return "Gemini";
   }
 
+  function geminiApiKeyInputs() {
+    return [$("#gemini-key"), $("#gemini-key-google")].filter(Boolean);
+  }
+
+  function typedGeminiApiKey() {
+    for (const el of geminiApiKeyInputs()) {
+      const value = el.value.trim();
+      if (value) return value;
+    }
+    return "";
+  }
+
+  function setGeminiApiKeyInputs(value) {
+    geminiApiKeyInputs().forEach((el) => {
+      el.value = value;
+    });
+  }
+
+  function syncGeminiApiKeyInputs(source) {
+    const value = source ? source.value : typedGeminiApiKey();
+    geminiApiKeyInputs().forEach((el) => {
+      if (el !== source) el.value = value;
+    });
+  }
+
+  function clearGeminiApiKeyInputs() {
+    setGeminiApiKeyInputs("");
+  }
+
+  function clearGeminiApiKeyInputsIfIdle() {
+    const active = document.activeElement;
+    geminiApiKeyInputs().forEach((el) => {
+      if (el !== active) el.value = "";
+    });
+  }
+
   function updateApiKeyIndicators() {
     const geminiSet = !!(
       state.config &&
@@ -5930,24 +5535,25 @@
       state.config.gemini.api_key_set
     );
 
-    const geminiBadge = $("#gemini-key-badge");
-    const geminiStatus = $("#gemini-key-status");
-    const geminiInput = $("#gemini-key");
-    if (geminiBadge) {
-      geminiBadge.textContent = geminiSet ? "Saved" : "Not set";
-      geminiBadge.classList.toggle("key-badge-set", geminiSet);
-      geminiBadge.classList.toggle("key-badge-missing", !geminiSet);
-    }
-    if (geminiInput) {
-      geminiInput.placeholder = geminiSet
+    const badges = [$("#gemini-key-badge"), $("#gemini-key-google-badge")];
+    const statuses = [$("#gemini-key-status"), $("#gemini-key-google-status")];
+    badges.forEach((badge) => {
+      if (!badge) return;
+      badge.textContent = geminiSet ? "Saved" : "Not set";
+      badge.classList.toggle("key-badge-set", geminiSet);
+      badge.classList.toggle("key-badge-missing", !geminiSet);
+    });
+    geminiApiKeyInputs().forEach((input) => {
+      input.placeholder = geminiSet
         ? "Leave blank to keep saved key"
         : "Paste Gemini API key";
-    }
-    if (geminiStatus) {
-      geminiStatus.textContent = geminiSet
-        ? "A Gemini API key is already saved. Leave the field blank to keep it."
-        : "No Gemini API key saved yet.";
-    }
+    });
+    statuses.forEach((statusEl) => {
+      if (!statusEl) return;
+      statusEl.textContent = geminiSet
+        ? "A Gemini API key is already saved in config.yaml. Leave the field blank to keep it."
+        : "No Gemini API key saved yet. Paste a key and click Save API key.";
+    });
   }
 
   function updateGoogleWorkspaceAuthIndicators(status) {
@@ -6015,8 +5621,7 @@
   }
 
   function providerApiKeyReady() {
-    const typed = ($("#gemini-key") && $("#gemini-key").value.trim()) || "";
-    if (typed) return true;
+    if (typedGeminiApiKey()) return true;
     return !!(
       state.config &&
       state.config.gemini &&
@@ -6027,10 +5632,32 @@
   function ensureApiKeyBeforeSave() {
     if (providerApiKeyReady()) return true;
     showToast("Paste a Gemini API key before saving.");
-    if ($("#gemini-key")) {
-      $("#gemini-key").focus();
-    }
+    const first = geminiApiKeyInputs()[0];
+    if (first) first.focus();
     return false;
+  }
+
+  async function saveGeminiApiKeyFromControls() {
+    const typed = typedGeminiApiKey();
+    const alreadySet = !!(
+      state.config &&
+      state.config.gemini &&
+      state.config.gemini.api_key_set
+    );
+    if (!typed && !alreadySet) {
+      showToast("Paste a Gemini API key first.");
+      const first = geminiApiKeyInputs()[0];
+      if (first) first.focus();
+      return;
+    }
+    if (!api()) {
+      showToast("Python bridge not ready.");
+      return;
+    }
+    await persistSettingsNow({ applyDisplay: false });
+    clearGeminiApiKeyInputs();
+    updateApiKeyIndicators();
+    showToast(typed ? "Gemini API key saved to config.yaml." : "Settings saved.");
   }
 
   function currentGeminiUiConfig() {
@@ -6067,7 +5694,7 @@
         audio_model:
           ($("#gemini-audio-model") && $("#gemini-audio-model").value.trim()) ||
           "lyria-3-clip-preview",
-        api_key: ($("#gemini-key") && $("#gemini-key").value.trim()) || "",
+        api_key: typedGeminiApiKey(),
         google_search: $("#gemini-search") ? $("#gemini-search").checked : true,
         two_pass_verify: $("#gemini-two-pass") ? $("#gemini-two-pass").checked : true,
         use_tools: $("#gemini-use-tools") ? $("#gemini-use-tools").checked : false,
@@ -6103,6 +5730,9 @@
         ui_scale: 1,
         ui_font:
           ($("#ui-font") && $("#ui-font").value) || state.uiFont || "inter",
+        ui_font_size: parseUiFontSize(
+          ($("#ui-font-size") && $("#ui-font-size").value) || state.uiFontSize
+        ),
         app_theme: resolveAppThemeKey(
           ($("#app-theme") && $("#app-theme").value) || state.appTheme || "light"
         ),
@@ -6192,6 +5822,9 @@
     applyUiScale(1);
     applyUiFont(
       ($("#ui-font") && $("#ui-font").value) || state.uiFont || "inter"
+    );
+    applyUiFontSize(
+      ($("#ui-font-size") && $("#ui-font-size").value) || state.uiFontSize
     );
     const themeKey =
       ($("#app-theme") && $("#app-theme").value) || state.appTheme || "light";
@@ -6297,7 +5930,32 @@
     state.generating = false;
     setCreateBlocked(false);
     endBusy("Ready");
-    if (state.studioBasis) clearStudioBasis();
+    const layout = getExtractedLayout(creation);
+    const extractedText = getExtractedText(creation);
+    const sameBasis =
+      !!state.studioBasis &&
+      !!creation.id &&
+      creation.id === state.studioBasis.creationId;
+    const studioJob = String(
+      (creation.meta && creation.meta.studioJob) || ""
+    ).toLowerCase();
+    const extractedThisJob = sameBasis && studioJob === "layout" && !!layout;
+    const extractedTextThisJob =
+      sameBasis && studioJob === "extract" && !!extractedText;
+    if (extractedThisJob) {
+      state.studioBasis.layout = layout;
+      renderStudioBasisPanel();
+      setStudioPrompt(formatLayoutBasisPrompt(layout, ""));
+      if (studioToolsEnabled()) {
+        setStudioSearch(formatLayoutBasisPrompt(layout, ""));
+      }
+      state.viewerTab = "layout";
+    } else if (extractedTextThisJob) {
+      renderStudioBasisPanel();
+      state.viewerTab = "extracted";
+    } else if (state.studioBasis) {
+      clearStudioBasis();
+    }
     state.creations = [creation].concat(
       state.creations.filter((c) => c.id !== creation.id)
     );
@@ -6306,6 +5964,28 @@
     openWindow("viewer");
     focusWindow("viewer");
     playUiSound("success");
+    if (extractedThisJob) {
+      const count =
+        layout && Array.isArray(layout.elements) ? layout.elements.length : 0;
+      showToast(
+        layout && layout.isUi === false
+          ? "No UI chrome found. The screenshot is still the Studio basis."
+          : "Layout ready (" +
+              count +
+              " element" +
+              (count === 1 ? "" : "s") +
+              "). Prompt Studio to recreate it as HTML/CSS or an app."
+      );
+    } else if (extractedTextThisJob) {
+      const kind = String(
+        (creation.meta && creation.meta.extractionKind) || ""
+      ).toLowerCase();
+      showToast(
+        kind === "transcript"
+          ? "Transcript ready. It is on the Extracted tab."
+          : "Extracted text ready. It is on the Extracted tab."
+      );
+    }
   }
 
   function applyGenerationError(err) {
@@ -6416,87 +6096,6 @@
         : "Layout ready (" + count + " element" + (count === 1 ? "" : "s") + ")."
     );
     playUiSound("success");
-  }
-
-  async function extractCreationLayout() {
-    if (!state.active) return;
-    const modality = creationModality(state.active);
-    if (modality !== "image" && modality !== "video") {
-      showToast("Extract Layout is for images and videos.");
-      return;
-    }
-    if (state.generating) {
-      showToast("Wait for the current AI job to finish.");
-      return;
-    }
-    const a = api();
-    if (!a) {
-      showToast("Python bridge not ready.");
-      return;
-    }
-    beginBusy("Extracting layout…", "Starting…", {
-      delayMs: 0,
-      cancellable: true,
-      activity: "other",
-      hint:
-        modality === "video"
-          ? "Grabbing a still frame, then asking Gemini to list UI chrome and coordinates."
-          : "Asking Gemini to find windows, buttons, and other chrome, then build coordinate JSON.",
-    });
-    try {
-      const res = await a.extract_creation_layout(state.active.id);
-      if (!res || !res.ok) {
-        endBusy();
-        showToast((res && res.error) || "Could not start Extract Layout.");
-        return;
-      }
-      busy.jobId = res.job_id;
-      await pollJob(res.job_id, "layout");
-    } catch (err) {
-      endBusy();
-      showToast(String(err));
-    }
-  }
-
-  async function extractCreationText() {
-    if (!state.active) return;
-    const modality = creationModality(state.active);
-    if (modality !== "image" && modality !== "video") {
-      showToast("Extract Text is for images and videos.");
-      return;
-    }
-    if (state.generating) {
-      showToast("Wait for the current AI job to finish.");
-      return;
-    }
-    const a = api();
-    if (!a) {
-      showToast("Python bridge not ready.");
-      return;
-    }
-    const title = modality === "video" ? "Transcribing…" : "Extracting text…";
-    beginBusy(title, "Starting…", {
-      delayMs: 0,
-      cancellable: true,
-      activity: "other",
-      hint:
-        modality === "video"
-          ? "Pulling speech from the video via your text model. This can take a minute."
-          : "Reading text from the image via your text model.",
-    });
-    try {
-      const res = await a.extract_creation_text(state.active.id);
-      if (!res || !res.ok) {
-        endBusy();
-        showToast((res && res.error) || "Could not start Extract Text.");
-        return;
-      }
-      busy.jobId = res.job_id;
-      await pollJob(res.job_id, "extract");
-    } catch (err) {
-      endBusy();
-      showToast(String(err));
-    }
   }
 
   async function requestCancelBusyJob() {
@@ -6722,6 +6321,8 @@
     }
     // Fresh user-initiated search may need a new Search Results dialog
     if (!exactTitle) _choiceHandledKey = "";
+    // Layout extract updates the basis in place (same Archive id).
+    state._lastHandledId = "";
     startGenerationLock = true;
 
     try {
@@ -6772,10 +6373,28 @@
         (state.studioBasis && state.studioBasis.creationId) || "";
       // Prefer prompt intent (video/image keywords); else keep basis modality.
       // "Generate a video…" + image basis → image-to-video, not img2img.
+      // "Extract the layout" / "extract the text" / "transcribe" are analysis, not img2img.
       let compatPrompt = prompt;
       let wantsMedia = false;
       if (basisId && state.studioBasis) {
         const lower = prompt.toLowerCase();
+        const wantsLayoutExtract =
+          /\b(extract|find|detect|analyze|map|inspect|pull|grab|get)\b[\s\S]{0,40}\b(the\s+)?(ui\s+)?layout\b/.test(
+            lower
+          ) ||
+          /\bextract\b[\s\S]{0,40}\b(ui(\s+chrome)?|coordinates?|regions?)\b/.test(
+            lower
+          ) ||
+          /\b(ui\s+)?layout\s+json\b/.test(lower) ||
+          /\bfind\b[\s\S]{0,32}\b(ui\s+)?chrome\b/.test(lower);
+        const wantsTextExtract =
+          !wantsLayoutExtract &&
+          (/\b(extract|ocr|read|pull|grab|get)\b[\s\S]{0,40}\b(the\s+)?(text|words|captions?|subtitles?)\b/.test(
+            lower
+          ) ||
+            /\bocr\b/.test(lower) ||
+            /\btranscri(be|ption|pt)\b/.test(lower) ||
+            /\bspeech[\s-]?to[\s-]?text\b/.test(lower));
         const wantsAudio =
           /\b(create|generate|make|compose|produce|write|score)\b[\s\S]{0,48}\b(music|song|soundtrack|jingle|melody|tune|instrumental|chiptune)\b/.test(
             lower
@@ -6799,7 +6418,9 @@
           /\b(create|generate|make|render|draw|paint|illustrate)\b[\s\S]{0,40}\b(image|picture|photo|illustration|drawing)\b/.test(
             lower
           ) || /\b(image|picture|photo)\s+of\b/.test(lower);
-        if (wantsAudio) {
+        if (wantsLayoutExtract || wantsTextExtract) {
+          wantsMedia = false;
+        } else if (wantsAudio) {
           compatPrompt = "Generate music: " + prompt;
           wantsMedia = true;
         } else if (wantsVideo) {
@@ -8982,7 +8603,6 @@
 
     document.addEventListener("focusin", (e) => {
       const el = e.target;
-      if (el === ime.trap) return;
       if (isImeField(el)) {
         attachIme(el);
         return;
@@ -9154,7 +8774,9 @@
       const modality = creationModality(state.active);
       const extracted = getExtractedText(state.active);
       if (modality !== "text" && !extracted && !(modality === "audio" && creationLyrics(state.active))) {
-        showToast("Run Extract Text… first, or open a text creation.");
+        showToast(
+          "Prompt Studio to extract the text or transcribe first, or open a text creation."
+        );
         return;
       }
       const a = api();
@@ -9178,17 +8800,6 @@
         showToast(String(err));
       }
     });
-
-    if ($("#btn-extract-text")) {
-      $("#btn-extract-text").addEventListener("click", () => {
-        extractCreationText();
-      });
-    }
-    if ($("#btn-extract-layout")) {
-      $("#btn-extract-layout").addEventListener("click", () => {
-        extractCreationLayout();
-      });
-    }
 
     const docCanvas = $("#doc-canvas");
     if (docCanvas) {
@@ -9349,6 +8960,17 @@
       });
     }
 
+    geminiApiKeyInputs().forEach((input) => {
+      input.addEventListener("input", () => syncGeminiApiKeyInputs(input));
+    });
+    ["btn-save-gemini-key", "btn-save-gemini-key-google"].forEach((id) => {
+      const btn = $("#" + id);
+      if (!btn) return;
+      btn.addEventListener("click", () => {
+        void saveGeminiApiKeyFromControls();
+      });
+    });
+
     if ($("#btn-gemini-refresh-models")) {
       $("#btn-gemini-refresh-models").addEventListener("click", async () => {
         await persistSettingsNow({ applyDisplay: false });
@@ -9489,6 +9111,11 @@
         applyUiFont($("#ui-font").value);
       });
     }
+    if ($("#ui-font-size")) {
+      $("#ui-font-size").addEventListener("change", () => {
+        applyUiFontSize($("#ui-font-size").value);
+      });
+    }
 
     wireImageEditEvents();
     wireVideoEditEvents();
@@ -9499,7 +9126,9 @@
     fillCatalogs(null);
     fillAppThemeSelect();
     fillUiFontSelect();
+    fillUiFontSizeSelect();
     applyUiFont(state.uiFont || "inter");
+    applyUiFontSize(state.uiFontSize || UI_FONT_SIZE_DEFAULT);
     applyAppTheme(state.appTheme || "light");
     syncControlPanelWidth();
     adoptWindowsIntoLayer();

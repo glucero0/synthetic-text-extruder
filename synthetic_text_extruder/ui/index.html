@@ -4,8 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Synthetic Text Extruder</title>
-  <link rel="stylesheet" href="styles.css?v=modern9" />
-  <link rel="stylesheet" href="modern.css?v=modern9" />
+  <link rel="stylesheet" href="styles.css?v=modern14" />
+  <link rel="stylesheet" href="modern.css?v=modern14" />
 </head>
 <body>
   <div id="desktop">
@@ -46,8 +46,6 @@
               <button type="button" id="btn-export-media" hidden role="menuitem">Save MP4…</button>
             </div>
             <div class="menu-group" data-screen="viewer">
-              <button type="button" id="btn-extract-text" hidden role="menuitem">Extract Text…</button>
-              <button type="button" id="btn-extract-layout" hidden role="menuitem">Extract Layout…</button>
               <button type="button" id="btn-use-basis" hidden role="menuitem">Use as Basis</button>
               <button type="button" id="btn-viewer-send-creator" hidden role="menuitem">Save and Send to Creator</button>
               <button type="button" id="btn-voice" hidden role="menuitem">Voice Reader</button>
@@ -86,8 +84,11 @@
       <div class="window app-window" id="win-form" data-window="form">
         <div class="window-body">
           <p class="hint mission-line" id="studio-mission-line">
-            Generate text, images, video, or music with Gemini. Pick models in
-            <strong>Settings</strong>. Review output before you rely on it.
+            Generate text, images, video, or music with Gemini. With a screenshot
+            or clip as the basis, prompt <strong>extract the text</strong>,
+            <strong>transcribe</strong>, or <strong>extract the layout</strong>.
+            Pick models in <strong>Settings</strong>. Review output before you
+            rely on it.
           </p>
 
           <div class="studio-layout" id="studio-layout">
@@ -161,12 +162,13 @@
                   Menu → Load Text puts text in the prompt. Menu → Load Image / Video sets a
                   media basis on the right (drag the divider to resize) — then describe the change
                   and CREATE.
-                  The Viewer can <strong>Open…</strong> a text, image, video, or song file
-                  (tabs and tools switch to that type). On an image or video, Viewer
-                  <strong>Extract Layout…</strong> finds UI regions; <strong>Use as Basis</strong>
-                  then sends the screenshot plus layout JSON so Studio can recreate it as
-                  HTML/CSS or an app (ask for an image if you want another mockup instead).
-                  For a song, Use as Basis reloads the prompt and lyrics as text — not the MP3.
+                  Send a screenshot or clip from Viewer (<strong>Use as Basis</strong>) or the
+                  image/video editor (<strong>Save and Send to Creator</strong>), then prompt
+                  <strong>extract the text</strong> (OCR), <strong>transcribe</strong> (speech),
+                  or <strong>extract the layout</strong> (UI regions). After a layout extract,
+                  ask Studio to recreate the UI as HTML/CSS or an app (or another mockup if you
+                  ask for an image). For a song, Use as Basis reloads the prompt and lyrics as
+                  text — not the MP3.
                 </p>
               </form>
             </div>
@@ -269,10 +271,13 @@
                 <fieldset id="gemini-settings">
                   <legend>Models</legend>
                   <p class="hint">
-                    Get a key at
+                    CREATE, extract, Search, Veo, and Lyria use a
+                    <strong>Gemini API key</strong> — not the Workspace OAuth token
+                    on the Google page. Get a key at
                     <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer">aistudio.google.com/apikey</a>.
-                    Paste it below — it is stored in <code>config.yaml</code> when you leave this page.
-                    Studio picks the Text / Image / Video / Audio model from your prompt.
+                    Paste it below and click <strong>Save API key</strong>
+                    (also stored when you leave this page). Studio picks the
+                    Text / Image / Video / Audio model from your prompt.
                     Defaults are the cheapest options in each slot — customize anytime.
                     Music uses Lyria (enable the music models for your Gemini API key).
                     Clip is safest for prompt experiments; Pro / 3.5 full songs are
@@ -280,6 +285,23 @@
                     Viewer Use as Basis on a song reloads the prompt and lyrics as text —
                     it does not attach the MP3.
                   </p>
+                  <div class="field-row-stacked">
+                    <label for="gemini-key">
+                      <span>Gemini API key</span>
+                      <span class="label-hint" id="gemini-key-badge">Not set</span>
+                    </label>
+                    <input
+                      id="gemini-key"
+                      type="password"
+                      autocomplete="off"
+                      spellcheck="false"
+                      placeholder="Paste Gemini API key"
+                    />
+                  </div>
+                  <div class="form-actions">
+                    <button type="button" id="btn-save-gemini-key">Save API key</button>
+                  </div>
+                  <p class="hint" id="gemini-key-status"></p>
                   <div class="field-row-stacked">
                     <label for="gemini-text-model">Text model</label>
                     <select id="gemini-text-model"></select>
@@ -304,14 +326,6 @@
                     <button type="button" id="btn-gemini-refresh-models">Refresh…</button>
                     <button type="button" id="btn-gemini-recommend-models">Recommend Models…</button>
                   </div>
-                  <div class="field-row-stacked">
-                    <label for="gemini-key">
-                      <span>API key</span>
-                      <span class="label-hint" id="gemini-key-badge">Not set</span>
-                    </label>
-                    <input id="gemini-key" type="password" placeholder="Paste Gemini API key" />
-                  </div>
-                  <p class="hint" id="gemini-key-status"></p>
                 </fieldset>
               </section>
 
@@ -379,6 +393,33 @@
               </section>
 
               <section id="control-pane-google" class="control-pane" data-control-pane="google" hidden>
+                <fieldset id="gemini-api-settings">
+                  <legend>Gemini API</legend>
+                  <p class="hint">
+                    Generation uses this API key (stored in <code>config.yaml</code>).
+                    The OAuth client below is only for Gmail, Drive, Docs, Calendar,
+                    and Tasks tools — it does not replace the key.
+                    Get a key at
+                    <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer">aistudio.google.com/apikey</a>.
+                  </p>
+                  <div class="field-row-stacked">
+                    <label for="gemini-key-google">
+                      <span>Gemini API key</span>
+                      <span class="label-hint" id="gemini-key-google-badge">Not set</span>
+                    </label>
+                    <input
+                      id="gemini-key-google"
+                      type="password"
+                      autocomplete="off"
+                      spellcheck="false"
+                      placeholder="Paste Gemini API key"
+                    />
+                  </div>
+                  <div class="form-actions">
+                    <button type="button" id="btn-save-gemini-key-google">Save API key</button>
+                  </div>
+                  <p class="hint" id="gemini-key-google-status"></p>
+                </fieldset>
                 <fieldset id="google-workspace-settings">
                   <legend>Google Workspace</legend>
                   <p class="hint">
@@ -467,13 +508,27 @@
 
                 <fieldset>
                   <legend>Font</legend>
-                  <div class="field-row-stacked">
-                    <label for="ui-font">UI font</label>
-                    <select id="ui-font"></select>
-                    <p class="hint" id="ui-font-hint">
-                      Open-source fonts load from the network the first time you pick them.
-                    </p>
+                  <div class="font-settings-row">
+                    <div class="field-row-stacked">
+                      <label for="ui-font">UI font</label>
+                      <select id="ui-font"></select>
+                    </div>
+                    <div class="field-row-stacked">
+                      <label for="ui-font-size">Font size</label>
+                      <select id="ui-font-size">
+                        <option value="11">Small (11)</option>
+                        <option value="12">12</option>
+                        <option value="13">Default (13)</option>
+                        <option value="14">14</option>
+                        <option value="16">Large (16)</option>
+                        <option value="18">Extra large (18)</option>
+                      </select>
+                    </div>
                   </div>
+                  <p class="hint" id="ui-font-hint">
+                    Open-source fonts load from the network the first time you pick them.
+                    Size applies to chrome, prompts, and document text.
+                  </p>
                 </fieldset>
 
                 <fieldset>
@@ -952,6 +1007,6 @@
   <script src="vendor/jspdf.umd.min.js"></script>
   <script src="catalog.js"></script>
   <script src="image_edit.js"></script>
-  <script src="app.js?v=modern9"></script>
+  <script src="app.js?v=modern14"></script>
 </body>
 </html>

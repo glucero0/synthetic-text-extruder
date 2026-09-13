@@ -20,7 +20,21 @@ label,
 legend,
 table {
   font-family: var(--ui-font);
+  font-size: var(--ui-font-size);
   -webkit-font-smoothing: antialiased;
+}
+
+.font-settings-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(8.5rem, 1fr);
+  gap: 12px;
+  align-items: end;
+  margin: 8px 0;
+}
+
+.font-settings-row .field-row-stacked {
+  margin: 0;
+  min-width: 0;
 }
 
 a {

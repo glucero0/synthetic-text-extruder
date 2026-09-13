@@ -28,6 +28,7 @@ ui:
   ui_scale: 1.0  # Display scaling (DPI). Desktop stays screen-sized; fonts and chrome grow together.
   # App chrome font (Control Panel → Display). Default Inter is more readable than Retro Pixel.
   ui_font: inter
+  ui_font_size: 13  # UI font size in px (11–22). Settings → Appearance.
   app_theme: light  # light | dark
   window_width: 1280
   window_height: 800

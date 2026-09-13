@@ -168,6 +168,36 @@ _TEXT_PROMPT_RE = re.compile(
     re.IGNORECASE | re.VERBOSE | re.DOTALL,
 )
 
+# Studio CREATE: OCR an image basis or transcribe a video basis (not img2img).
+_TEXT_EXTRACT_RE = re.compile(
+    r"""
+    (?:
+        \b(?:extract|ocr|read|pull|grab|get)\b
+        .{0,40}?
+        \b(?:the\s+)?(?:text|words|captions?|subtitles?)\b
+      | \bocr\b
+      | \btranscri(?:be|ption|pt)\b
+      | \bspeech[\s\-]?to[\s\-]?text\b
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE | re.DOTALL,
+)
+
+# Studio CREATE: analyze a screenshot/video basis for UI chrome (not img2img).
+_LAYOUT_EXTRACT_RE = re.compile(
+    r"""
+    (?:
+        \b(?:extract|find|detect|analyze|map|inspect|pull|grab|get)\b
+        .{0,40}?
+        \b(?:the\s+)?(?:ui\s+)?layout\b
+      | \bextract\b.{0,40}?\b(?:ui(?:\s+chrome)?|coordinates?|regions?)\b
+      | \b(?:ui\s+)?layout\s+json\b
+      | \bfind\b.{0,32}?\b(?:ui\s+)?chrome\b
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE | re.DOTALL,
+)
+
 
 def normalize_modality(value: Any, default: Modality = "text") -> Modality:
     raw = str(value or "").strip().lower()
@@ -249,6 +279,20 @@ def modality_indefinite(modality: Modality) -> str:
     return f"{article} {label}"
 
 
+def infer_layout_extract_intent(prompt: str) -> bool:
+    """True when the Studio prompt asks to extract UI layout from a media basis."""
+    text = (prompt or "").strip()
+    return bool(text and _LAYOUT_EXTRACT_RE.search(text))
+
+
+def infer_text_extract_intent(prompt: str) -> bool:
+    """True when the Studio prompt asks to OCR or transcribe a media basis."""
+    text = (prompt or "").strip()
+    if not text or infer_layout_extract_intent(text):
+        return False
+    return bool(_TEXT_EXTRACT_RE.search(text))
+
+
 def infer_prompt_modality(prompt: str) -> Modality | None:
     """
     Infer strong user intent from the prompt.
@@ -259,6 +303,10 @@ def infer_prompt_modality(prompt: str) -> Modality | None:
     text = (prompt or "").strip()
     if not text:
         return None
+
+    # Layout / OCR / transcribe are text analysis jobs, even with media attached.
+    if infer_layout_extract_intent(text) or infer_text_extract_intent(text):
+        return "text"
 
     # Audio before video: "generate a music clip" must not become Veo.
     if _AUDIO_PROMPT_RE.search(text):
@@ -284,15 +332,18 @@ def resolve_generation_modality(
 
     Clear prompt intent (including \"generate a video\" with an image basis →
     image-to-video, or \"generate music\" with an image basis → image-to-music)
-    wins. An extracted UI layout defaults to text (rebuild as HTML/app) unless
-    the prompt asks for image/video/music. Otherwise a media basis keeps the
-    same modality.
+    wins. \"Extract the layout\", \"extract the text\", or \"transcribe\" on an
+    image/video basis is text analysis, not img2img. An extracted UI layout
+    defaults to text (rebuild as HTML/app) unless the prompt asks for
+    image/video/music. Otherwise a media basis keeps the same modality.
     """
     prompt_mod = infer_prompt_modality(prompt)
     basis = (basis_modality or "").strip().lower()
     if basis not in {"image", "video"}:
         basis = ""
 
+    if infer_layout_extract_intent(prompt) or infer_text_extract_intent(prompt):
+        return "text"
     if prompt_mod in {"image", "video", "audio"}:
         return prompt_mod
     if prompt_mod == "text":

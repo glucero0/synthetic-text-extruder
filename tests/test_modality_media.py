@@ -17,7 +17,9 @@ from synthetic_text_extruder.media_store import (
 from synthetic_text_extruder.modality import (
     check_prompt_model_compatibility,
     classify_model_modality,
+    infer_layout_extract_intent,
     infer_prompt_modality,
+    infer_text_extract_intent,
     normalize_modality,
     resolve_generation_modality,
 )
@@ -114,6 +116,39 @@ def test_resolve_generation_modality_prompt_wins_over_image_basis():
         )
         == "image"
     )
+
+
+def test_infer_layout_extract_intent_from_studio_prompt():
+    assert infer_layout_extract_intent("extract the layout")
+    assert infer_layout_extract_intent("Extract layout from this screenshot")
+    assert infer_layout_extract_intent("find UI chrome")
+    assert infer_layout_extract_intent("get the layout JSON")
+    assert not infer_layout_extract_intent("recreate the layout as HTML")
+    assert not infer_layout_extract_intent("make it blue")
+    assert infer_prompt_modality("extract the layout") == "text"
+    assert (
+        resolve_generation_modality("extract the layout", basis_modality="image")
+        == "text"
+    )
+    assert (
+        resolve_generation_modality("extract the layout", basis_modality="video")
+        == "text"
+    )
+
+
+def test_infer_text_extract_intent_from_studio_prompt():
+    assert infer_text_extract_intent("extract the text")
+    assert infer_text_extract_intent("OCR this screenshot")
+    assert infer_text_extract_intent("transcribe this video")
+    assert infer_text_extract_intent("speech to text")
+    assert not infer_text_extract_intent("extract the layout")
+    assert not infer_text_extract_intent("write a short story")
+    assert infer_prompt_modality("transcribe this clip") == "text"
+    assert (
+        resolve_generation_modality("extract the text", basis_modality="image")
+        == "text"
+    )
+    assert resolve_generation_modality("transcribe", basis_modality="video") == "text"
 
 
 def test_gemini_routes_music_prompt_ok():
