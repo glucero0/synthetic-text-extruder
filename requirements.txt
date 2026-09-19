@@ -31,6 +31,7 @@ httpx==0.28.1
 idna==3.18
 iniconfig==2.3.0
 packaging==26.3
+pillow==11.3.0
 pluggy==1.6.0
 proxy_tools==0.1.0
 pyasn1==0.6.4
@@ -40,6 +41,7 @@ pydantic==2.13.4
 pydantic_core==2.46.4
 Pygments==2.21.0
 pytest==9.1.1
+reportlab==5.0.1
 pythonnet==3.1.0; sys_platform == "win32"
 pywebview==6.2.1
 PyYAML==6.0.3

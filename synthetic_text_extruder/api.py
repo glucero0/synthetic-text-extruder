@@ -536,15 +536,17 @@ class Api:
         basis_creation_id: str = "",
         tool_aliases: list[str] | None = None,
         search_query: str = "",
+        source_creation_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         """Start generation in a background thread; UI must poll get_job(job_id)."""
         logger.info(
-            "create_creation requested: %s / %s / %s (exact=%s, basis=%s, tools=%s, search=%s)",
+            "create_creation requested: %s / %s / %s (exact=%s, basis=%s, sources=%s, tools=%s, search=%s)",
             game,
             platform,
             creation_type,
             exact_title,
             (basis_creation_id or "")[:24] or "-",
+            len(source_creation_ids or []),
             ",".join(tool_aliases or []) or "-",
             "yes" if (search_query or "").strip() else "no",
         )
@@ -565,13 +567,52 @@ class Api:
         desc_preview = (creation_description or "").strip() or game
         basis_id = (basis_creation_id or "").strip()
         basis_media: dict[str, Any] | None = None
+        source_creations: list[dict[str, Any]] = []
+        try:
+            source_creations = self._resolve_source_creations(source_creation_ids)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
+        from .studio_sources import (
+            DEFAULT_REPORT_PROMPT,
+            last_visual_source,
+            match_quoted_source,
+            wants_source_report,
+        )
+        from .collection_jobs import wants_collection_job
+
+        if source_creations and not (creation_description or "").strip():
+            desc_preview = DEFAULT_REPORT_PROMPT
+        extract_job = infer_layout_extract_intent(
+            desc_preview
+        ) or infer_text_extract_intent(desc_preview)
+        named_visual = None
+        if extract_job and source_creations:
+            named_visual, match_err = match_quoted_source(
+                desc_preview,
+                source_creations,
+                modalities={"image", "video"},
+            )
+            if match_err:
+                return {"ok": False, "error": match_err}
+            if named_visual:
+                basis_id = str(named_visual.get("id") or "").strip()
+        visual = named_visual or last_visual_source(source_creations)
+        if visual and not basis_id:
+            basis_id = str(visual.get("id") or "").strip()
+        will_report = wants_source_report(desc_preview, source_creations)
+        will_collection = wants_collection_job(desc_preview, source_creations)
         if basis_id:
             try:
                 basis_media = self._resolve_basis_media(basis_id)
             except Exception as exc:  # noqa: BLE001
-                return {"ok": False, "error": str(exc)}
+                if will_report or will_collection:
+                    basis_media = None
+                else:
+                    return {"ok": False, "error": str(exc)}
             bmod = (basis_media or {}).get("modality")
-            if infer_layout_extract_intent(desc_preview) or infer_text_extract_intent(
+            if will_report or will_collection:
+                pass
+            elif infer_layout_extract_intent(desc_preview) or infer_text_extract_intent(
                 desc_preview
             ):
                 pass
@@ -602,6 +643,8 @@ class Api:
 
         job_id = f"gen_{uuid.uuid4().hex[:10]}"
         desc_override = (creation_description or "").strip()
+        if source_creations and not desc_override:
+            desc_override = DEFAULT_REPORT_PROMPT
         search_override = (search_query or "").strip()
         from .gemini_tools import normalize_tool_aliases
 
@@ -644,10 +687,24 @@ class Api:
                     basis_media=basis_media,
                     tool_aliases=tools_for_job,
                     search_query=search_override or None,
+                    source_creations=source_creations or None,
                 )
                 if cancel_evt.is_set():
                     raise GenerationCancelled("Cancelled by user")
+                extras = []
+                if isinstance(result, dict):
+                    extras = list(result.pop("_also_upsert", None) or [])
                 saved = self.store.upsert(result)
+                for extra in extras:
+                    if isinstance(extra, dict) and extra.get("id"):
+                        try:
+                            self.store.upsert(extra)
+                        except Exception:  # noqa: BLE001
+                            logger.debug(
+                                "Could not save collection output %s",
+                                extra.get("id"),
+                                exc_info=True,
+                            )
                 logger.info(
                     "Generation complete: %s modality=%s model=%s",
                     saved.get("id"),
@@ -1054,6 +1111,38 @@ class Api:
         threading.Thread(target=_run, daemon=True, name=job_id).start()
         return {"ok": True, "job_id": job_id}
 
+    def _creation_by_id(self, creation_id: str) -> dict[str, Any] | None:
+        cid = (creation_id or "").strip()
+        if not cid:
+            return None
+        for item in self.store.load():
+            if str(item.get("id") or "") == cid:
+                return item
+        return None
+
+    def _resolve_source_creations(
+        self, source_creation_ids: list[str] | None
+    ) -> list[dict[str, Any]]:
+        from .studio_sources import MAX_SOURCES
+
+        raw_ids = source_creation_ids or []
+        if not isinstance(raw_ids, list):
+            raw_ids = [raw_ids]
+        seen: set[str] = set()
+        out: list[dict[str, Any]] = []
+        for raw in raw_ids:
+            cid = str(raw or "").strip()
+            if not cid or cid in seen:
+                continue
+            seen.add(cid)
+            item = self._creation_by_id(cid)
+            if not item:
+                raise RuntimeError(f"Studio source {cid} was not found in Archives.")
+            out.append(item)
+            if len(out) >= MAX_SOURCES:
+                break
+        return out
+
     def _resolve_basis_media(self, creation_id: str) -> dict[str, Any]:
         """Load Archive media for Studio image/video → new media generation."""
         from .media_store import mime_for_path, read_media_bytes, resolve_media_path
@@ -1133,6 +1222,7 @@ class Api:
         modality = str(creation.get("modality") or "").lower()
         is_video = modality == "video" or (mime or "").startswith("video/")
         is_audio = modality == "audio" or (mime or "").startswith("audio/")
+        is_pdf = modality == "pdf" or (mime or "") == "application/pdf"
 
         # Prefer same-origin HTTP — WebView blocks file:// from localhost pages,
         # and large image data URLs can choke the pywebview bridge.
@@ -1141,10 +1231,10 @@ class Api:
             http_url = f"{self._ui_origin}/media/{path.name}"
         file_uri = http_url or media_file_uri(media_path)
 
-        if is_video or is_audio:
+        if is_video or is_audio or is_pdf:
             return {
                 "ok": True,
-                "modality": "audio" if is_audio else "video",
+                "modality": "pdf" if is_pdf else ("audio" if is_audio else "video"),
                 "mimeType": mime,
                 "fileUrl": file_uri,
                 "mediaPath": media_path,
@@ -1348,11 +1438,7 @@ class Api:
             return err
         assert dest is not None and target is not None
         try:
-            title = (target.get("title") or target.get("game") or "video").strip()
-            safe = (
-                "".join(c if c.isalnum() or c in "-_ " else "_" for c in title)[:40].strip()
-                or "video"
-            )
+            safe = self._media_save_basename(target, fallback="video")
             result = self._window.create_file_dialog(
                 _file_dialog("save"),
                 save_filename=f"{safe}.mp4",
@@ -1485,6 +1571,65 @@ class Api:
             except OSError:
                 pass
 
+    def _remember_embedding_filename(
+        self, creation: dict[str, Any], name: str
+    ) -> None:
+        """Cache a suggested basename on the Archive record so later saves skip the API."""
+        cid = str((creation or {}).get("id") or "").strip()
+        safe = str(name or "").strip()
+        if not cid or not safe:
+            return
+        try:
+            for item in self.store.load():
+                if item.get("id") != cid:
+                    continue
+                meta = dict(item.get("meta") or {})
+                if meta.get("embeddingFilename") == safe:
+                    return
+                meta["embeddingFilename"] = safe
+                item["meta"] = meta
+                self.store.upsert(item)
+                creation_meta = dict(creation.get("meta") or {})
+                creation_meta["embeddingFilename"] = safe
+                creation["meta"] = creation_meta
+                return
+        except Exception:  # noqa: BLE001
+            logger.debug("Could not cache embedding filename", exc_info=True)
+
+    def _media_save_basename(
+        self, creation: dict[str, Any] | None, *, fallback: str = "creation"
+    ) -> str:
+        """Embedding-based basename for a media save dialog, with prompt-slug fallback."""
+        from .creation_utils import title_from_prompt
+        from .embedding_filename import slugify_filename, suggest_filename_for_creation
+
+        creation = creation or {}
+        gemini_cfg = (self.config or {}).get("gemini") or {}
+        name = suggest_filename_for_creation(
+            creation,
+            api_key=resolve_gemini_key(gemini_cfg),
+            config=self.config,
+            fallback=fallback,
+        )
+        prompt_slug = slugify_filename(
+            title_from_prompt(str(creation.get("prompt") or ""), fallback),
+            fallback=fallback,
+        )
+        if name and name != prompt_slug:
+            self._remember_embedding_filename(creation, name)
+        return name
+
+    def suggest_media_filename(
+        self, creation: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Return a filesystem-safe basename (no extension) for Viewer / editor Save As."""
+        try:
+            name = self._media_save_basename(creation or {}, fallback="creation")
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("suggest_media_filename failed")
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "filename": name}
+
     def export_creation_media(self, creation: dict[str, Any] | None = None) -> dict[str, Any]:
         """Save the native media file via a file dialog (Viewer Save MP4 / similar)."""
         from .media_store import mime_for_path, resolve_media_path
@@ -1505,8 +1650,7 @@ class Api:
             from .media_store import extension_for_mime
 
             ext = extension_for_mime(mime, fallback=path.suffix or ".bin")
-        title = (creation.get("title") or creation.get("game") or "creation").strip()
-        safe = "".join(c if c.isalnum() or c in "-_ " else "_" for c in title)[:40].strip() or "creation"
+        safe = self._media_save_basename(creation, fallback="creation")
         default_name = f"{safe}{ext}"
         result = self._window.create_file_dialog(
             _file_dialog("save"),
@@ -1573,20 +1717,32 @@ class Api:
         path.write_bytes(raw)
         return {"ok": True, "path": str(path)}
 
-    def _dialog_open_path(self, file_types: tuple[str, ...]) -> dict[str, Any]:
+    def _dialog_open_paths(
+        self, file_types: tuple[str, ...], *, allow_multiple: bool = False
+    ) -> dict[str, Any]:
         if self._window is None:
             return {"ok": False, "error": "No window"}
         result = self._window.create_file_dialog(
             _file_dialog("open"),
-            allow_multiple=False,
+            allow_multiple=bool(allow_multiple),
             file_types=file_types,
         )
         if not result:
             return {"ok": False, "cancelled": True}
-        path = Path(result if isinstance(result, str) else result[0])
-        if not path.is_file():
+        if isinstance(result, (list, tuple)):
+            paths = [Path(p) for p in result if str(p).strip()]
+        else:
+            paths = [Path(result)]
+        files = [p for p in paths if p.is_file()]
+        if not files:
             return {"ok": False, "error": "File not found"}
-        return {"ok": True, "path": path}
+        return {"ok": True, "paths": files}
+
+    def _dialog_open_path(self, file_types: tuple[str, ...]) -> dict[str, Any]:
+        picked = self._dialog_open_paths(file_types, allow_multiple=False)
+        if not picked.get("ok"):
+            return picked
+        return {"ok": True, "path": picked["paths"][0]}
 
     def _import_text_from_path(
         self, path: Path, save_to_archives: bool = False
@@ -1608,12 +1764,15 @@ class Api:
             "path": str(path),
         }
         if save_to_archives:
+            from .studio_sources import apply_original_filename
+
             creation = build_text_creation_from_plain(
                 text,
                 prompt=f"Imported from {path.name}",
                 title=title,
                 model_info={"provider": "import", "repo_id": path.name},
             )
+            creation = apply_original_filename(creation, path.name)
             out["creation"] = self.store.upsert(creation)
         return out
 
@@ -1625,8 +1784,8 @@ class Api:
         from .modality import normalize_modality
 
         mod = normalize_modality(modality, default="image")
-        if mod not in {"image", "video", "audio"}:
-            return {"ok": False, "error": "modality must be image, video, or audio"}
+        if mod not in {"image", "video", "audio", "pdf"}:
+            return {"ok": False, "error": "modality must be image, video, audio, or pdf"}
         if not path.is_file():
             return {"ok": False, "error": "File not found"}
 
@@ -1644,6 +1803,8 @@ class Api:
             mime = "video/mp4"
         if mod == "audio" and not str(mime).startswith("audio/"):
             mime = "audio/mpeg"
+        if mod == "pdf":
+            mime = "application/pdf"
 
         new_id = f"doc_{uuid.uuid4().hex[:10]}"
         try:
@@ -1657,7 +1818,10 @@ class Api:
             "image": "Imported Image",
             "video": "Imported Video",
             "audio": "Imported Audio",
+            "pdf": "Imported PDF",
         }.get(mod, "Imported Media")
+        from .studio_sources import apply_original_filename
+
         creation = build_media_creation(
             modality=mod,
             prompt=f"Imported from {path.name}",
@@ -1667,6 +1831,7 @@ class Api:
             creation_id=new_id,
             model_info={"provider": "import", "repo_id": path.name, "modality": mod},
         )
+        creation = apply_original_filename(creation, path.name)
         saved = self.store.upsert(creation)
         return {"ok": True, "creation": saved, "modality": mod}
 
@@ -1708,6 +1873,147 @@ class Api:
             return picked
         return self._import_media_from_path(picked["path"], mod)
 
+    def import_pdf_file(self) -> dict[str, Any]:
+        """Import a PDF into Archives as a Studio source."""
+        picked = self._dialog_open_path(
+            ("PDF Files (*.pdf)", "All Files (*.*)")
+        )
+        if not picked.get("ok"):
+            return picked
+        return self._import_media_from_path(picked["path"], "pdf")
+
+    def _import_source_from_path(self, path: Path) -> dict[str, Any]:
+        from .media_store import modality_for_path
+
+        mod = modality_for_path(path)
+        if not mod:
+            return {"ok": False, "error": "Unsupported file type"}
+        if mod == "text":
+            return self._import_text_from_path(path, save_to_archives=True)
+        return self._import_media_from_path(path, mod)
+
+    def _import_source_paths(
+        self, paths: list[Path], *, already: int = 0, as_collection: bool = False,
+        folder_name: str = "", recursive: bool = False,
+    ) -> dict[str, Any]:
+        from .collection_jobs import MAX_COLLECTION_ITEMS, build_collection_creation
+        from .studio_sources import MAX_SOURCES
+
+        remaining_slots = max(0, MAX_SOURCES - max(0, int(already or 0)))
+        unique_paths: list[Path] = []
+        seen: set[str] = set()
+        for path in paths:
+            key = str(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_paths.append(path)
+        use_collection = bool(as_collection)
+        if not use_collection:
+            if remaining_slots <= 0:
+                return {
+                    "ok": False,
+                    "error": f"Studio sources are limited to {MAX_SOURCES}.",
+                }
+            if len(unique_paths) > MAX_SOURCES or len(unique_paths) > remaining_slots:
+                use_collection = remaining_slots >= 1 and len(unique_paths) >= 2
+        if use_collection and remaining_slots <= 0:
+            return {
+                "ok": False,
+                "error": f"Studio sources are limited to {MAX_SOURCES}.",
+            }
+
+        cap = MAX_COLLECTION_ITEMS if use_collection else remaining_slots
+        creations: list[dict[str, Any]] = []
+        skipped: list[dict[str, str]] = []
+        for path in unique_paths:
+            if len(creations) >= cap:
+                skipped.append({"name": path.name, "error": "Source limit reached"})
+                continue
+            res = self._import_source_from_path(path)
+            if res.get("ok") and res.get("creation"):
+                creations.append(res["creation"])
+            else:
+                skipped.append(
+                    {
+                        "name": path.name,
+                        "error": str(res.get("error") or "Import failed"),
+                    }
+                )
+        if not creations:
+            err = skipped[0]["error"] if skipped else "No supported files"
+            return {"ok": False, "error": err, "skipped": skipped}
+        if use_collection:
+            wrapper = build_collection_creation(
+                creations,
+                folder_name=folder_name or (unique_paths[0].parent.name if unique_paths else "Collection"),
+                recursive=recursive,
+                prompt=f"Collection from {folder_name or 'files'}",
+            )
+            wrapper = self.store.upsert(wrapper)
+            return {
+                "ok": True,
+                "collection": True,
+                "creations": [wrapper],
+                "members": creations,
+                "skipped": skipped,
+            }
+        return {
+            "ok": True,
+            "creations": creations,
+            "skipped": skipped,
+        }
+
+    def import_studio_sources(self, already: int = 0) -> dict[str, Any]:
+        """Multi-select mixed files (text, image, video, audio, PDF) as Studio sources."""
+        picked = self._dialog_open_paths(
+            (
+                "All supported (*.txt;*.md;*.markdown;*.csv;*.png;*.jpg;*.jpeg;"
+                "*.webp;*.gif;*.bmp;*.mp4;*.webm;*.mov;*.mkv;*.avi;*.mp3;*.wav;"
+                "*.ogg;*.m4a;*.aac;*.pdf)",
+                "Text Files (*.txt;*.md;*.markdown;*.csv)",
+                "Image Files (*.png;*.jpg;*.jpeg;*.webp;*.gif;*.bmp)",
+                "Video Files (*.mp4;*.webm;*.mov;*.mkv;*.avi)",
+                "Audio Files (*.mp3;*.wav;*.ogg;*.m4a;*.aac)",
+                "PDF Files (*.pdf)",
+                "All Files (*.*)",
+            ),
+            allow_multiple=True,
+        )
+        if not picked.get("ok"):
+            return picked
+        return self._import_source_paths(picked["paths"], already=already)
+
+    def import_studio_sources_folder(
+        self, already: int = 0, recursive: bool = False
+    ) -> dict[str, Any]:
+        """Import files from a chosen folder as Studio sources."""
+        from .studio_sources import list_source_files_in_folder
+
+        if self._window is None:
+            return {"ok": False, "error": "No window"}
+        result = self._window.create_file_dialog(_file_dialog("folder"))
+        if not result:
+            return {"ok": False, "cancelled": True}
+        folder = Path(result if isinstance(result, str) else result[0])
+        if folder.is_file():
+            folder = folder.parent
+        try:
+            folder = folder.expanduser().resolve()
+        except OSError as exc:
+            return {"ok": False, "error": str(exc)}
+        if not folder.is_dir():
+            return {"ok": False, "error": "Folder not found"}
+        files = list_source_files_in_folder(folder, recursive=bool(recursive))
+        if not files:
+            return {"ok": False, "error": "No supported files in that folder."}
+        return self._import_source_paths(
+            files,
+            already=already,
+            folder_name=folder.name,
+            recursive=bool(recursive),
+        )
+
     def open_viewer_file(self) -> dict[str, Any]:
         """Open any supported file in the Viewer and save it to Archives."""
         from .media_store import modality_for_path
@@ -1716,11 +2022,12 @@ class Api:
             (
                 "All supported (*.txt;*.md;*.markdown;*.csv;*.png;*.jpg;*.jpeg;"
                 "*.webp;*.gif;*.bmp;*.mp4;*.webm;*.mov;*.mkv;*.avi;*.mp3;*.wav;"
-                "*.ogg;*.m4a;*.aac)",
+                "*.ogg;*.m4a;*.aac;*.pdf)",
                 "Text Files (*.txt;*.md;*.markdown;*.csv)",
                 "Image Files (*.png;*.jpg;*.jpeg;*.webp;*.gif;*.bmp)",
                 "Video Files (*.mp4;*.webm;*.mov;*.mkv;*.avi)",
                 "Audio Files (*.mp3;*.wav;*.ogg;*.m4a;*.aac)",
+                "PDF Files (*.pdf)",
                 "All Files (*.*)",
             )
         )
@@ -1731,7 +2038,7 @@ class Api:
         if not mod:
             return {
                 "ok": False,
-                "error": "Viewer can open text, images, video, or audio.",
+                "error": "Viewer can open text, images, video, audio, or PDF.",
             }
         if mod == "text":
             return self._import_text_from_path(path, save_to_archives=True)
@@ -1756,12 +2063,14 @@ class Api:
         if not title.lower().endswith("(copy)"):
             title = f"{title} (copy)"
 
-        if mod in {"image", "video", "audio"}:
+        if mod in {"image", "video", "audio", "pdf"}:
             raw = read_media_bytes(source.get("mediaPath"), config=self.config)
             if not raw:
                 return {"ok": False, "error": "Media file not found"}
             mime = source.get("mimeType") or (
-                "audio/mpeg"
+                "application/pdf"
+                if mod == "pdf"
+                else "audio/mpeg"
                 if mod == "audio"
                 else "video/mp4"
                 if mod == "video"

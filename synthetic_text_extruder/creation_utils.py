@@ -81,14 +81,19 @@ def build_media_creation(
     creation_id: str | None = None,
     lyrics: str | None = None,
 ) -> dict[str, Any]:
-    """Build an image/video/audio creation record (media stored on disk)."""
+    """Build an image/video/audio/PDF creation record (media stored on disk)."""
     modality = normalize_modality(modality, default="image")
-    if modality not in {"image", "video", "audio"}:
+    if modality not in {"image", "video", "audio", "pdf"}:
         modality = "image"
     prompt = (prompt or "").strip()
     display = (title or title_from_prompt(prompt, "Untitled")).strip() or "Untitled"
     cid = creation_id or f"doc_{uuid.uuid4().hex[:10]}"
-    type_label = {"image": "Image", "video": "Video", "audio": "Audio"}[modality]
+    type_label = {
+        "image": "Image",
+        "video": "Video",
+        "audio": "Audio",
+        "pdf": "PDF",
+    }[modality]
     sections: list[dict[str, Any]] = []
     lyrics_text = (lyrics or "").strip()
     if lyrics_text:

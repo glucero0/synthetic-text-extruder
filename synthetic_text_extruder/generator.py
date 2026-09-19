@@ -34,6 +34,7 @@ def generate_creation(
     basis_media: dict[str, Any] | None = None,
     tool_aliases: list[str] | None = None,
     search_query: str | None = None,
+    source_creations: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Dispatch to Gemini and return a creation document."""
     from .cancellation import raise_if_cancelled
@@ -75,7 +76,28 @@ def generate_creation(
     from .modality import resolve_generation_modality
 
     prompt_text = creation_description or game
-    if infer_layout_extract_intent(prompt_text):
+    sources = [s for s in (source_creations or []) if isinstance(s, dict)]
+    from .studio_sources import wants_source_report
+
+    report = wants_source_report(prompt_text, sources)
+    from .collection_jobs import run_collection_job, wants_collection_job
+
+    if wants_collection_job(prompt_text, sources):
+        raise_if_cancelled(_cancelled)
+        return run_collection_job(
+            sources,
+            prompt=prompt_text,
+            config=config,
+            progress=progress,
+            cancel_event=cancel_event,
+            tool_aliases=tool_aliases,
+            search_query=search_text,
+            game=game,
+            platform=platform,
+            creation_type=creation_type,
+        )
+
+    if not report and infer_layout_extract_intent(prompt_text):
         if not basis or not basis.get("bytes"):
             raise RuntimeError(
                 "Load an image or video as the Studio basis, then ask to extract the layout."
@@ -111,7 +133,7 @@ def generate_creation(
             source=source_kind,
         )
 
-    if infer_text_extract_intent(prompt_text):
+    if not report and infer_text_extract_intent(prompt_text):
         source = basis.get("source_creation") if basis else None
         if not isinstance(source, dict):
             raise RuntimeError(
@@ -130,6 +152,23 @@ def generate_creation(
             media_path=path,
             progress=progress,
             cancel_event=cancel_event,
+        )
+
+    if report:
+        from .studio_sources import gather_then_synthesize
+
+        raise_if_cancelled(_cancelled)
+        return gather_then_synthesize(
+            sources,
+            game=game,
+            platform=platform,
+            creation_type=creation_type,
+            config=config,
+            user_prompt=prompt_text,
+            progress=progress,
+            cancel_event=cancel_event,
+            tool_aliases=tool_aliases,
+            search_query=search_text,
         )
 
     # Prompt intent wins (e.g. "generate a video" + image basis → I2V).

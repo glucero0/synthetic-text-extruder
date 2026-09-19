@@ -4,8 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Synthetic Text Extruder</title>
-  <link rel="stylesheet" href="styles.css?v=modern14" />
-  <link rel="stylesheet" href="modern.css?v=modern14" />
+  <link rel="stylesheet" href="styles.css?v=modern20" />
+  <link rel="stylesheet" href="modern.css?v=modern17" />
 </head>
 <body>
   <div id="desktop">
@@ -28,6 +28,10 @@
               <button type="button" id="btn-studio-load-text" role="menuitem">Load Text…</button>
               <button type="button" id="btn-studio-load-image" role="menuitem">Load Image…</button>
               <button type="button" id="btn-studio-load-video" role="menuitem">Load Video…</button>
+              <button type="button" id="btn-studio-load-pdf" role="menuitem">Load PDF…</button>
+              <button type="button" id="btn-studio-load-files" role="menuitem">Load Files…</button>
+              <button type="button" id="btn-studio-load-folder" role="menuitem">Load Folder…</button>
+              <button type="button" id="btn-studio-load-folder-recursive" role="menuitem">Load Folder Recursively…</button>
             </div>
             <div class="menu-group" data-screen="library">
               <button type="button" id="btn-import" role="menuitem">Import JSON…</button>
@@ -84,8 +88,14 @@
       <div class="window app-window" id="win-form" data-window="form">
         <div class="window-body">
           <p class="hint mission-line" id="studio-mission-line">
-            Generate text, images, video, or music with Gemini. With a screenshot
-            or clip as the basis, prompt <strong>extract the text</strong>,
+            Generate text, images, video, or music with Gemini. Attach mixed
+            <strong>Sources</strong> (image, video, text, PDF, audio) — or a
+            <strong>folder collection</strong> for batch jobs (OCR every scan,
+            apply a filter, reconstruct a magazine PDF, make a flipbook). Two or
+            more tray sources still CREATE an illustrated report (prompt
+            <strong>summarize</strong> for a document you can Export PDF — not
+            a new video). One screenshot
+            or clip: prompt <strong>extract the text</strong>,
             <strong>transcribe</strong>, or <strong>extract the layout</strong>.
             Pick models in <strong>Settings</strong>. Review output before you
             rely on it.
@@ -159,16 +169,25 @@
                   <button type="button" id="btn-generate" class="default">⚡ CREATE</button>
                 </div>
                 <p class="hint" id="studio-load-hint">
-                  Menu → Load Text puts text in the prompt. Menu → Load Image / Video sets a
-                  media basis on the right (drag the divider to resize) — then describe the change
-                  and CREATE.
-                  Send a screenshot or clip from Viewer (<strong>Use as Basis</strong>) or the
-                  image/video editor (<strong>Save and Send to Creator</strong>), then prompt
-                  <strong>extract the text</strong> (OCR), <strong>transcribe</strong> (speech),
-                  or <strong>extract the layout</strong> (UI regions). After a layout extract,
-                  ask Studio to recreate the UI as HTML/CSS or an app (or another mockup if you
-                  ask for an image). For a song, Use as Basis reloads the prompt and lyrics as
-                  text — not the MP3.
+                  Menu → Load Files / Folder (or Load Text / Image / Video / PDF)
+                  adds attachments to the <strong>Sources</strong> pane — Studio is
+                  the hub, so you do not have to pass through the image editor.
+                  With two or more tray sources, CREATE writes a cited illustrated
+                  report (pictures stay in the Viewer; Export PDF includes them).
+                  A large folder becomes one <strong>Collection</strong> — prompt
+                  it to OCR every scan, apply a filter, reconstruct a magazine PDF,
+                  or make a flipbook. One screenshot or clip still works as a
+                  visual basis: prompt <strong>extract the text</strong>,
+                  <strong>transcribe</strong>, or <strong>extract the layout</strong>.
+                  After a layout extract, ask Studio to recreate the UI as HTML/CSS
+                  or an app. Click a source to preview it; text scrolls in the pane.
+                  To OCR one picture among several, quote its title or filename
+                  (⋯ inserts the filename) or select that row, then prompt
+                  <strong>extract the text</strong>.
+                  Use <strong>⋯</strong> on a source to add its
+                  filename to the prompt, copy it, or remove it. For a song,
+                  Use as Basis adds the track as a source (for reports) and can
+                  reload lyrics as text for a new Lyria clip.
                 </p>
               </form>
             </div>
@@ -178,20 +197,23 @@
               id="studio-basis-splitter"
               role="separator"
               aria-orientation="vertical"
-              aria-label="Resize media basis"
+              aria-label="Resize sources pane"
               aria-controls="studio-basis-panel"
               tabindex="0"
               hidden
             ></div>
             <aside class="studio-basis-panel" id="studio-basis-panel" hidden>
               <fieldset>
-                <legend>Media basis</legend>
+                <legend>Sources</legend>
                 <div class="studio-basis-preview" id="studio-basis-preview">
-                  <p class="muted">No media loaded</p>
+                  <p class="muted">No sources</p>
                 </div>
                 <p class="hint" id="studio-basis-label"></p>
-                <div class="form-actions">
-                  <button type="button" id="btn-studio-clear-basis">Clear basis</button>
+                <ul class="studio-sources-list" id="studio-sources-list" aria-label="Studio sources"></ul>
+                <div class="form-actions studio-sources-actions">
+                  <button type="button" id="btn-studio-add-files">Add files…</button>
+                  <button type="button" id="btn-studio-add-folder">Add folder…</button>
+                  <button type="button" id="btn-studio-clear-basis">Clear sources</button>
                 </div>
               </fieldset>
             </aside>
@@ -206,6 +228,7 @@
             <button type="button" class="viewer-tab" data-tab="doc" role="tab" id="tab-doc" hidden>Document</button>
             <button type="button" class="viewer-tab" data-tab="media" role="tab" id="tab-media" hidden>Media</button>
             <button type="button" class="viewer-tab" data-tab="extracted" role="tab" id="tab-extracted" hidden>Extracted</button>
+            <button type="button" class="viewer-tab" data-tab="flipbook" role="tab" id="tab-flipbook" hidden>Flipbook</button>
             <button type="button" class="viewer-tab" data-tab="layout" role="tab" id="tab-layout" hidden>Layout</button>
             <button type="button" class="viewer-tab" data-tab="grounding" role="tab" id="tab-grounding" hidden>Sources (0)</button>
           </div>
@@ -213,10 +236,12 @@
             <div class="viewer-empty">
               <p>
                 Open a <strong>text</strong> file, <strong>image</strong>, <strong>video</strong>,
-                or <strong>song</strong>. Tabs and tools change to match that type.
+                <strong>song</strong>, or <strong>PDF</strong>. Tabs and tools change to match that type.
               </p>
               <p class="muted">
-                You can also generate in Creation Studio or pick an item in Archives.
+                You can also generate in Creation Studio, add items as Sources, or pick an item in Archives.
+                Save PNG / MP4 / MP3 looks at the file and prefills a short
+                filename you can edit.
               </p>
             </div>
           </div>
@@ -282,8 +307,10 @@
                     Music uses Lyria (enable the music models for your Gemini API key).
                     Clip is safest for prompt experiments; Pro / 3.5 full songs are
                     filtered more strictly (no artist names or copyrighted lyrics).
-                    Viewer Use as Basis on a song reloads the prompt and lyrics as text —
-                    it does not attach the MP3.
+                    Viewer <strong>Use as Basis</strong> adds the item to Studio
+                    <strong>Sources</strong> (image, video, text, PDF, or audio).
+                    A new Lyria track still uses prompt and lyrics as text — the API
+                    cannot take an MP3 as input.
                   </p>
                   <div class="field-row-stacked">
                     <label for="gemini-key">
@@ -473,7 +500,7 @@
                     <button type="button" id="btn-reset-media-folder">Use project default</button>
                   </div>
                   <p class="hint" id="media-folder-hint">
-                    Only image, video, and song files go here (PNG, MP4, MP3).
+                    Image, video, song, and PDF files go here (PNG, MP4, MP3, PDF).
                     Text, lyrics, prompts, and metadata stay in
                     <code>archives.json</code> — you do not need to Export to
                     keep them. Default is the <code>media</code> folder next
@@ -1001,12 +1028,27 @@
     </div>
 
       <div id="error-toast" hidden></div>
+      <div
+        id="studio-source-menu"
+        class="studio-source-menu"
+        hidden
+        role="menu"
+        aria-label="Source actions"
+      >
+        <button type="button" role="menuitem" data-action="add-filename">
+          Add filename to prompt
+        </button>
+        <button type="button" role="menuitem" data-action="copy-filename">
+          Copy filename
+        </button>
+        <button type="button" role="menuitem" data-action="remove">Remove</button>
+      </div>
   </div>
 
   <script src="vendor/html-to-image.js"></script>
   <script src="vendor/jspdf.umd.min.js"></script>
   <script src="catalog.js"></script>
   <script src="image_edit.js"></script>
-  <script src="app.js?v=modern14"></script>
+  <script src="app.js?v=modern23"></script>
 </body>
 </html>

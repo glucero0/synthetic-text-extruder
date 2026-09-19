@@ -1007,6 +1007,64 @@ def _concat_video_only(
     return out
 
 
+def build_image_slideshow(
+    image_paths: list[Path],
+    dest: str | Path,
+    *,
+    seconds_per_image: float = 1.5,
+) -> Path:
+    """Concatenate stills into an H.264 MP4 slideshow."""
+    ffmpeg = _require_ffmpeg()
+    paths = [Path(p) for p in image_paths if p and Path(p).is_file()]
+    if len(paths) < 2:
+        raise ValueError("Slideshow needs at least two images")
+    out = Path(dest)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    duration = max(0.2, min(8.0, float(seconds_per_image or 1.5)))
+    list_file = out.with_suffix(".concat.txt")
+    try:
+        lines: list[str] = []
+        for path in paths:
+            escaped = str(path.resolve()).replace("\\", "/").replace("'", r"'\''")
+            lines.append(f"file '{escaped}'")
+            lines.append(f"duration {duration:.3f}")
+        last = str(paths[-1].resolve()).replace("\\", "/").replace("'", r"'\''")
+        lines.append(f"file '{last}'")
+        list_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        cmd = [
+            ffmpeg,
+            *_ffmpeg_quiet_args(),
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(list_file),
+            "-vf",
+            "scale=trunc(iw/2)*2:trunc(ih/2)*2,fps=30,format=yuv420p",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "20",
+            "-an",
+            "-movflags",
+            "+faststart",
+            "-y",
+            str(out),
+        ]
+        proc = _run(cmd, timeout=1200)
+        if proc.returncode != 0 or not out.is_file() or out.stat().st_size == 0:
+            raise RuntimeError(proc.stderr.strip() or "ffmpeg slideshow failed")
+        return out
+    finally:
+        try:
+            list_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def temp_mp4_path(prefix: str = "r98vid_") -> Path:
     fd, name = tempfile.mkstemp(prefix=prefix, suffix=".mp4")
     os.close(fd)

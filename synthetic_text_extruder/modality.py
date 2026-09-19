@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-Modality = str  # "text" | "image" | "video" | "audio"
+Modality = str  # "text" | "image" | "video" | "audio" | "pdf"
 
 _IMAGE_ID_TOKENS: tuple[str, ...] = (
     "imagen",
@@ -149,10 +149,33 @@ _AUDIO_PROMPT_RE = re.compile(
     re.IGNORECASE | re.VERBOSE | re.DOTALL,
 )
 
+_REPORT_PROMPT_RE = re.compile(
+    r"""
+    \b(?:create|write|make|draft|compose|build|prepare)\b
+    .{0,48}?
+    \b(?:an?\s+|the\s+)?report\b
+    """,
+    re.IGNORECASE | re.VERBOSE | re.DOTALL,
+)
+
+_SUMMARIZE_RE = re.compile(
+    r"\b(?:summar(?:y|ies|ise|ize|ising|izing)|recap|rundown)\b",
+    re.IGNORECASE,
+)
+
+_SUMMARIZE_TO_MEDIA_RE = re.compile(
+    r"""
+    \b(?:into|as|to)\b
+    .{0,16}?
+    \b(?:an?\s+)?(?:video|clip|animation|image|picture|song|music)\b
+    """,
+    re.IGNORECASE | re.VERBOSE | re.DOTALL,
+)
+
 _TEXT_PROMPT_RE = re.compile(
     r"""
     (?:
-        \b(?:write|draft|compose|summarize|explain|document)\b
+        \b(?:write|draft|compose|summarize|explain|document|create|make)\b
         .{0,40}?
         \b(?:an?\s+|the\s+)?(?:essay|article|manual|guide|document|story|poem|letter|report|overview)\b
       | \b(?:quick\s+)?reference\s+(?:card|sheet)\b
@@ -209,6 +232,8 @@ def normalize_modality(value: Any, default: Modality = "text") -> Modality:
         return "audio"
     if raw in {"text", "document", "doc", "markdown"}:
         return "text"
+    if raw in {"pdf", "application/pdf"}:
+        return "pdf"
     return default
 
 
@@ -270,6 +295,7 @@ def modality_label(modality: Modality) -> str:
         "image": "Image",
         "video": "Video",
         "audio": "Audio",
+        "pdf": "PDF",
     }.get(modality, "Text")
 
 
@@ -293,6 +319,26 @@ def infer_text_extract_intent(prompt: str) -> bool:
     return bool(_TEXT_EXTRACT_RE.search(text))
 
 
+def infer_report_intent(prompt: str) -> bool:
+    """True when the Studio prompt asks to write a report (not generate a video)."""
+    text = (prompt or "").strip()
+    if not text:
+        return False
+    if _REPORT_PROMPT_RE.search(text):
+        return True
+    if not _SUMMARIZE_RE.search(text):
+        return False
+    if _SUMMARIZE_TO_MEDIA_RE.search(text):
+        return False
+    if (
+        _VIDEO_PROMPT_RE.search(text)
+        or _IMAGE_PROMPT_RE.search(text)
+        or _AUDIO_PROMPT_RE.search(text)
+    ):
+        return False
+    return True
+
+
 def infer_prompt_modality(prompt: str) -> Modality | None:
     """
     Infer strong user intent from the prompt.
@@ -306,6 +352,10 @@ def infer_prompt_modality(prompt: str) -> Modality | None:
 
     # Layout / OCR / transcribe are text analysis jobs, even with media attached.
     if infer_layout_extract_intent(text) or infer_text_extract_intent(text):
+        return "text"
+
+    # "Create a report … summary of the video" is a document, not Veo.
+    if infer_report_intent(text):
         return "text"
 
     # Audio before video: "generate a music clip" must not become Veo.

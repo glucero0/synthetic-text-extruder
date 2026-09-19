@@ -226,7 +226,9 @@ legend {
 }
 
 .app-menu-panel [role="menuitem"]:hover,
-.app-menu-panel [role="menuitem"]:focus {
+.app-menu-panel [role="menuitem"]:focus,
+.studio-source-menu [role="menuitem"]:hover,
+.studio-source-menu [role="menuitem"]:focus {
   background: var(--ui-text);
   color: var(--ui-window);
   filter: none;
