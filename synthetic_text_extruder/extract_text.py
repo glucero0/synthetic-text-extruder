@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
@@ -232,11 +233,6 @@ def _extract_image(
     from .cancellation import raise_if_cancelled
 
     raise_if_cancelled(cancel_check)
-    if len(raw) > MAX_INLINE_BYTES:
-        raise RuntimeError(
-            f"Image is too large for Extract Text ({len(raw) // (1024 * 1024)} MB). "
-            "Try a smaller image."
-        )
     return _gemini_multimodal(
         raw,
         mime_type=mime_type,
@@ -356,14 +352,15 @@ def _gemini_multimodal(
     _emit(progress, f"Contacting Gemini ({model_name})…", percent=55)
     client = genai.Client(api_key=api_key)
     raise_if_cancelled(cancel_check)
+    uploaded = None
     try:
+        media_part, uploaded = _gemini_media_part(
+            client, types, data=data, mime_type=mime_type, cancel_check=cancel_check
+        )
         response = run_cancellable(
             lambda: client.models.generate_content(
                 model=model_name,
-                contents=[
-                    types.Part.from_bytes(data=data, mime_type=mime_type),
-                    prompt,
-                ],
+                contents=[media_part, prompt],
                 config=types.GenerateContentConfig(temperature=0.0),
             ),
             cancel_event,
@@ -374,10 +371,131 @@ def _gemini_multimodal(
         if isinstance(exc, GenerationCancelled):
             raise
         raise RuntimeError(f"Gemini Extract Text failed: {exc}") from exc
+    finally:
+        if uploaded is not None:
+            try:
+                name = getattr(uploaded, "name", None)
+                if name:
+                    client.files.delete(name=name)
+            except Exception:  # noqa: BLE001
+                logger.debug("Could not delete Gemini uploaded file", exc_info=True)
 
     raise_if_cancelled(cancel_check)
     text = _gemini_response_text(response)
     return text, model_name
+
+
+def gemini_text_prompt(
+    prompt: str,
+    *,
+    config: dict[str, Any],
+    model_id: str,
+    progress: ProgressCallback | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+    cancel_event: Any = None,
+) -> tuple[str, str]:
+    """Plain-text Gemini call (no media part)."""
+    from .cancellation import raise_if_cancelled, run_cancellable
+    from .gemini_provider import normalize_gemini_model, resolve_api_key
+
+    def _cancelled() -> bool:
+        if cancel_check:
+            return bool(cancel_check())
+        return bool(cancel_event is not None and cancel_event.is_set())
+
+    raise_if_cancelled(_cancelled)
+    gemini_cfg = config.get("gemini") or {}
+    api_key = resolve_api_key(gemini_cfg)
+    if not api_key:
+        raise RuntimeError(
+            "Gemini API key missing. Paste your key in Settings → AI Model (Gemini)."
+        )
+    model_name = normalize_gemini_model(model_id or gemini_cfg.get("text_model"))
+    try:
+        from google import genai
+        from google.genai import types
+    except ImportError as exc:
+        raise RuntimeError(
+            "google-genai is not installed. Run:\n  pip install google-genai"
+        ) from exc
+    _emit(progress, f"Contacting Gemini ({model_name})…", percent=55)
+    client = genai.Client(api_key=api_key)
+    response = run_cancellable(
+        lambda: client.models.generate_content(
+            model=model_name,
+            contents=prompt,
+            config=types.GenerateContentConfig(temperature=0.2),
+        ),
+        cancel_event,
+    )
+    return _gemini_response_text(response), model_name
+
+
+def _gemini_media_part(
+    client: Any,
+    types: Any,
+    *,
+    data: bytes,
+    mime_type: str,
+    cancel_check: Callable[[], bool],
+) -> tuple[Any, Any]:
+    """Inline bytes when small; Gemini Files API upload when over the inline cap."""
+    from .cancellation import raise_if_cancelled
+
+    raise_if_cancelled(cancel_check)
+    mime = (mime_type or "application/octet-stream").split(";", 1)[0].strip()
+    if len(data) <= MAX_INLINE_BYTES:
+        return types.Part.from_bytes(data=data, mime_type=mime), None
+
+    import tempfile
+    import time
+
+    suffix = _suffix_for_mime(mime)
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as handle:
+            handle.write(data)
+            tmp_path = handle.name
+        uploaded = client.files.upload(file=tmp_path, config={"mime_type": mime})
+        deadline = time.monotonic() + 120
+        state = str(getattr(getattr(uploaded, "state", None), "name", "") or "")
+        while state in {"PROCESSING", "STATE_UNSPECIFIED", ""}:
+            raise_if_cancelled(cancel_check)
+            if time.monotonic() > deadline:
+                break
+            time.sleep(0.4)
+            name = getattr(uploaded, "name", None)
+            if not name:
+                break
+            uploaded = client.files.get(name=name)
+            state = str(getattr(getattr(uploaded, "state", None), "name", "") or "")
+        if state and state not in {"ACTIVE", "STATE_UNSPECIFIED", ""}:
+            raise RuntimeError(f"Gemini file upload ended in state {state}.")
+        return uploaded, uploaded
+    finally:
+        if tmp_path:
+            try:
+                Path(tmp_path).unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _suffix_for_mime(mime: str) -> str:
+    mapping = {
+        "image/png": ".png",
+        "image/jpeg": ".jpg",
+        "image/jpg": ".jpg",
+        "image/webp": ".webp",
+        "image/gif": ".gif",
+        "application/pdf": ".pdf",
+        "audio/mpeg": ".mp3",
+        "audio/mp3": ".mp3",
+        "audio/wav": ".wav",
+        "video/mp4": ".mp4",
+        "video/webm": ".webm",
+        "text/plain": ".txt",
+    }
+    return mapping.get((mime or "").lower(), ".bin")
 
 
 def _gemini_response_text(response: Any) -> str:

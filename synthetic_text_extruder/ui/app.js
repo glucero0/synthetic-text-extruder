@@ -23,12 +23,15 @@
     retiredGeminiModels: [],
     config: null,
     viewerTab: "doc",
+    flipbookIndex: 0,
     speechPlaying: false,
     settingsPage: "models",
     archiveSort: { key: "created", dir: "desc" },
     presets: [],
     creationTypes: [],
-    studioBasis: null, // { creationId, modality, fileUrl, mimeType, title, layout }
+    studioBasis: null, // last image/video in studioSources (extract / I2V)
+    studioSelectedSourceId: "", // Sources list selection — drives the preview
+    studioSources: [], // [{ creationId, modality, fileUrl, mimeType, title, mediaPath, layout, textBody }]
     studioBasisWidth: 280, // persisted as ui.studio_basis_width
     studioTools: [], // selected Gemini tool aliases for this session
     geminiToolsCatalog: null, // from bootstrap / list_gemini_tools
@@ -1343,15 +1346,15 @@
     if (searchWrap) searchWrap.hidden = !enabled || !searchOn;
     if (toolUseWrap) toolUseWrap.hidden = !enabled;
     if (loadHint) {
-      if (!enabled) {
+        if (!enabled) {
         loadHint.textContent =
-          "Menu → Load Text puts text in the prompt. Menu → Load Image / Video sets a media basis on the right (drag the divider to resize) — then describe the change and CREATE. Send a screenshot or clip from Viewer (Use as Basis) or the image/video editor (Save and Send to Creator), then prompt extract the text, transcribe, or extract the layout. After a layout extract, ask Studio to recreate the UI as HTML/CSS or an app (or another mockup if you ask for an image). For a song, Use as Basis reloads the prompt and lyrics as text — not the MP3.";
+          "Menu → Load Files / Folder (or Load Folder Recursively) adds attachments to Sources. A large folder becomes one Collection chip — prompt the folder: OCR every scan, apply a filter, skip ads and reconstruct a magazine PDF, make a flipbook, or describe each file. Two or more tray sources (not a collection): CREATE writes a cited illustrated report (summarize is a document — Export PDF / PNG, not Save MP4). To OCR one picture, quote its filename (⋯) or select that row. One screenshot or clip: extract the text, transcribe, or extract the layout. A song adds the track as a source for reports; lyrics can still seed a new Lyria clip (the MP3 is not sent to Lyria).";
       } else if (searchOn) {
         loadHint.textContent =
-          "Menu → Load Text puts text in Search (optional). Menu → Load Image / Video sets a media basis on the right (drag the divider to resize) — then describe the change and CREATE. Send a screenshot or clip from Viewer (Use as Basis) or the image/video editor (Save and Send to Creator), then prompt extract the text, transcribe, or extract the layout. After a layout extract, ask Studio to recreate the UI as HTML/CSS or an app (or another mockup if you ask for an image). For a song, Use as Basis reloads the prompt and lyrics as text — not the MP3.";
+          "Menu → Load Files / Folder adds Sources (a large folder is one Collection). Prompt the collection for batch OCR, filters, a magazine PDF, or a flipbook. Two or more tray sources still write a cited illustrated report (Export PDF / PNG, not Save MP4). Quote a source filename to extract text from that image, or select the row first.";
       } else {
         loadHint.textContent =
-          "Google Search is off — only Tool Use runs. Menu → Load Image / Video sets a media basis on the right (drag the divider to resize) — then describe the change and CREATE. Send a screenshot or clip from Viewer (Use as Basis) or the image/video editor (Save and Send to Creator), then prompt extract the text, transcribe, or extract the layout. After a layout extract, ask Studio to recreate the UI as HTML/CSS or an app (or another mockup if you ask for an image). For a song, Use as Basis reloads the prompt and lyrics as text — not the MP3.";
+          "Google Search is off — only Tool Use runs. Menu → Load Files / Folder adds Sources. A Collection chip is one source you can prompt as a batch. Two or more tray sources: CREATE writes a cited illustrated report (Export PDF / PNG).";
       }
     }
     renderStudioToolsList();
@@ -2081,14 +2084,13 @@
     };
   }
 
-  function insertSavedPromptAtCursor(promptId) {
-    const prompt = savedPromptById(promptId);
-    if (!prompt) return;
-    const text = String(prompt.body || "");
+  function insertStudioTextAtCursor(text, toastName) {
+    const snippet = String(text || "");
+    if (!snippet) return false;
     const ta = studioInsertField();
     if (!ta) {
       showToast("Open the Prompt field in Creation Studio first.");
-      return;
+      return false;
     }
     const caret = state.studioCaret || {};
     let start =
@@ -2108,18 +2110,29 @@
     if (end < start) end = start;
     const before = ta.value.slice(0, start);
     const after = ta.value.slice(end);
-    ta.value = before + text + after;
-    const cursor = start + text.length;
+    const padBefore = before && !/\s$/.test(before) ? " " : "";
+    const padAfter = after && !/^\s/.test(after) ? " " : "";
+    ta.value = before + padBefore + snippet + padAfter + after;
+    const cursor = start + padBefore.length + snippet.length;
     try {
       ta.setSelectionRange(cursor, cursor);
+      ta.focus();
     } catch (_) {
       /* ignore */
     }
     rememberStudioCaret(ta);
     attachIme(ta);
+    if (toastName) showToast('Inserted "' + toastName + '".');
+    return true;
+  }
+
+  function insertSavedPromptAtCursor(promptId) {
+    const prompt = savedPromptById(promptId);
+    if (!prompt) return;
+    const text = String(prompt.body || "");
     const studioSel = $("#studio-saved-prompt");
     if (studioSel) studioSel.value = "";
-    showToast('Inserted "' + (prompt.name || "prompt") + '".');
+    insertStudioTextAtCursor(text, prompt.name || "prompt");
   }
 
   function onStudioSavedPromptChange() {
@@ -2210,10 +2223,304 @@
     return body;
   }
 
+  const MAX_STUDIO_SOURCES = 12;
+  const DEFAULT_SOURCES_REPORT_PROMPT =
+    "Write a single report from the attached sources. Combine transcripts, image descriptions, and document text. Cite each source by title.";
+
+  function studioSourceKindLabel(modality) {
+    if (modality === "image") return "Image";
+    if (modality === "video") return "Video";
+    if (modality === "audio") return "Audio";
+    if (modality === "pdf") return "PDF";
+    if (modality === "collection") return "Collection";
+    return "Text";
+  }
+
+  function sourceFileBasename(name) {
+    let base = String(name || "").trim().replace(/\\/g, "/");
+    const slash = base.lastIndexOf("/");
+    if (slash >= 0) base = base.slice(slash + 1);
+    base = base.trim();
+    if (!base || base === "." || base === "..") return "";
+    return base.slice(0, 200);
+  }
+
+  function sourceExtensionForCreation(creation) {
+    const path = String((creation && creation.mediaPath) || "");
+    const fromPath = path.match(/(\.[a-z0-9]{1,8})$/i);
+    if (fromPath) return fromPath[1].toLowerCase();
+    const mime = String((creation && creation.mimeType) || "")
+      .toLowerCase()
+      .split(";")[0]
+      .trim();
+    const byMime = {
+      "image/png": ".png",
+      "image/jpeg": ".jpg",
+      "image/jpg": ".jpg",
+      "image/webp": ".webp",
+      "image/gif": ".gif",
+      "video/mp4": ".mp4",
+      "video/webm": ".webm",
+      "audio/mpeg": ".mp3",
+      "audio/mp3": ".mp3",
+      "audio/wav": ".wav",
+      "application/pdf": ".pdf",
+      "text/plain": ".txt",
+      "text/markdown": ".md",
+      "text/csv": ".csv",
+    };
+    if (byMime[mime]) return byMime[mime];
+    const mod = creationModality(creation);
+    if (mod === "image") return ".png";
+    if (mod === "video") return ".mp4";
+    if (mod === "audio") return ".mp3";
+    if (mod === "pdf") return ".pdf";
+    if (mod === "text") return ".txt";
+    return "";
+  }
+
+  function originalFilenameForCreation(creation, opts) {
+    const anonymous = !!(opts && opts.anonymous);
+    if (!creation) return "untitled";
+    const meta = creation.meta || {};
+    let name = sourceFileBasename(meta.originalFilename || "");
+    if (!name && !anonymous) {
+      const prompt = String(creation.prompt || "");
+      if (/^Imported from\s+/i.test(prompt)) {
+        name = sourceFileBasename(prompt.replace(/^Imported from\s+/i, ""));
+      }
+    }
+    if (!name && !anonymous) name = sourceFileBasename(creationTitle(creation));
+    if (!name) name = "untitled";
+    const ext = sourceExtensionForCreation(creation);
+    if (ext && !/\.[a-z0-9]{1,8}$/i.test(name)) name += ext;
+    return name;
+  }
+
+  function quotedSourceFilename(name) {
+    const safe = sourceFileBasename(name) || "untitled";
+    return '"' + safe.replace(/"/g, "'") + '"';
+  }
+
+  async function copyTextToClipboard(text) {
+    const value = String(text || "");
+    if (!value) return false;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      try {
+        await navigator.clipboard.writeText(value);
+        return true;
+      } catch (_) {
+        /* fall through */
+      }
+    }
+    const ta = document.createElement("textarea");
+    ta.value = value;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    let ok = false;
+    try {
+      ok = document.execCommand("copy");
+    } catch (_) {
+      ok = false;
+    }
+    ta.remove();
+    return ok;
+  }
+
+  function closeStudioSourceMenu() {
+    const menu = $("#studio-source-menu");
+    if (menu) {
+      menu.hidden = true;
+      delete menu.dataset.creationId;
+      delete menu.dataset.filename;
+    }
+    document.querySelectorAll(".studio-source-more[aria-expanded='true']").forEach((btn) => {
+      btn.setAttribute("aria-expanded", "false");
+    });
+  }
+
+  function positionStudioSourceMenu(btn) {
+    const menu = $("#studio-source-menu");
+    if (!menu || !btn) return;
+    const rect = btn.getBoundingClientRect();
+    menu.hidden = false;
+    const menuW = menu.offsetWidth || 220;
+    const menuH = menu.offsetHeight || 120;
+    let top = rect.bottom + 4;
+    let left = rect.right - menuW;
+    if (left < 8) left = 8;
+    if (left + menuW > window.innerWidth - 8) {
+      left = Math.max(8, window.innerWidth - menuW - 8);
+    }
+    if (top + menuH > window.innerHeight - 8 && rect.top - 4 - menuH > 8) {
+      top = rect.top - 4 - menuH;
+    }
+    menu.style.top = Math.round(top) + "px";
+    menu.style.left = Math.round(left) + "px";
+  }
+
+  function openStudioSourceMenu(btn, item) {
+    const menu = $("#studio-source-menu");
+    if (!menu || !btn || !item) return;
+    closeAppMenus();
+    closeStudioSourceMenu();
+    menu.dataset.creationId = item.creationId || "";
+    menu.dataset.filename = item.filename || "";
+    btn.setAttribute("aria-expanded", "true");
+    menu.setAttribute("aria-labelledby", btn.id || "");
+    positionStudioSourceMenu(btn);
+  }
+
+  async function onStudioSourceMenuAction(action) {
+    const menu = $("#studio-source-menu");
+    const creationId = menu && menu.dataset.creationId;
+    const filename = (menu && menu.dataset.filename) || "";
+    closeStudioSourceMenu();
+    if (action === "remove") {
+      removeStudioSource(creationId);
+      showToast("Source removed");
+      return;
+    }
+    if (!filename) {
+      showToast("No filename for this source.");
+      return;
+    }
+    if (action === "copy-filename") {
+      const ok = await copyTextToClipboard(filename);
+      showToast(ok ? "Copied " + filename : "Could not copy to clipboard.");
+      return;
+    }
+    if (action === "add-filename") {
+      insertStudioTextAtCursor(quotedSourceFilename(filename), filename);
+    }
+  }
+
+  function studioVisualBasis() {
+    const items = state.studioSources || [];
+    for (let i = items.length - 1; i >= 0; i--) {
+      if (items[i].modality === "image" || items[i].modality === "video") {
+        return items[i];
+      }
+    }
+    return null;
+  }
+
+  function studioSelectedSource() {
+    const items = state.studioSources || [];
+    if (!items.length) return null;
+    const id = String(state.studioSelectedSourceId || "");
+    const found = id
+      ? items.find((item) => item.creationId === id)
+      : null;
+    return found || items[items.length - 1];
+  }
+
+  function selectStudioSource(creationId) {
+    const id = String(creationId || "");
+    if (!id) return;
+    if (!(state.studioSources || []).some((item) => item.creationId === id)) {
+      return;
+    }
+    if (state.studioSelectedSourceId === id) return;
+    state.studioSelectedSourceId = id;
+    renderStudioBasisPanel();
+  }
+
+  function studioSourceTextBody(item) {
+    if (!item) return "";
+    const creation = (state.creations || []).find(
+      (c) => c && c.id === item.creationId
+    );
+    const live = extractCreationTextBody(creation);
+    if (live) return live;
+    return String(item.textBody || "").trim();
+  }
+
+  function fillStudioSourcePreview(preview, item) {
+    preview.innerHTML = "";
+    if (!item) {
+      preview.innerHTML = '<p class="muted">No sources</p>';
+      return;
+    }
+    const mod = item.modality;
+    if (mod === "video" && item.fileUrl) {
+      const vid = document.createElement("video");
+      vid.src = item.fileUrl;
+      vid.controls = true;
+      vid.playsInline = true;
+      preview.appendChild(vid);
+      return;
+    }
+    if (mod === "image" && item.fileUrl) {
+      const img = document.createElement("img");
+      img.src = item.fileUrl;
+      img.alt = item.title || "Source image";
+      preview.appendChild(img);
+      return;
+    }
+    if (mod === "text") {
+      const pre = document.createElement("pre");
+      pre.className = "studio-source-text-preview";
+      pre.textContent = studioSourceTextBody(item) || "(empty)";
+      preview.appendChild(pre);
+      return;
+    }
+    if (mod === "pdf" && item.fileUrl) {
+      const frame = document.createElement("iframe");
+      frame.className = "studio-source-pdf-preview";
+      frame.src = item.fileUrl;
+      frame.title = item.title || item.filename || "PDF";
+      preview.appendChild(frame);
+      return;
+    }
+    if (mod === "audio" && item.fileUrl) {
+      const audio = document.createElement("audio");
+      audio.controls = true;
+      audio.preload = "metadata";
+      audio.src = item.fileUrl;
+      preview.appendChild(audio);
+      const lyrics = studioSourceTextBody(item);
+      if (lyrics) {
+        const pre = document.createElement("pre");
+        pre.className = "studio-source-text-preview";
+        pre.textContent = lyrics;
+        preview.appendChild(pre);
+      }
+      return;
+    }
+    if (mod === "collection") {
+      const pre = document.createElement("pre");
+      pre.className = "studio-source-text-preview";
+      const count = item.memberCount || (item.collection && item.collection.count) || 0;
+      pre.textContent =
+        (count ? count + " files in this collection.\n\n" : "Collection.\n\n") +
+        (studioSourceTextBody(item) || "Prompt this folder: OCR, filter, magazine PDF, flipbook, or any per-file instruction.");
+      preview.appendChild(pre);
+      return;
+    }
+    const p = document.createElement("p");
+    p.className = "muted";
+    const name = item.filename || item.title || "";
+    p.textContent =
+      studioSourceKindLabel(mod) +
+      (name ? " — " + name : "") +
+      ". No inline preview.";
+    preview.appendChild(p);
+  }
+
+  function syncStudioBasisFromSources() {
+    state.studioBasis = studioVisualBasis();
+    renderStudioBasisPanel();
+  }
+
   /**
-   * Use an existing creation as the basis for new work of the same modality.
-   * Text/audio → Studio prompt (songs: prompt + lyrics only, never the MP3).
-   * Image/video → Studio media-basis panel (not the editors).
+   * Use an existing creation as a Studio source.
+   * Image/video stay available as the visual basis for extract / I2V.
+   * Text/PDF/audio attach for gather+report. Songs also seed lyrics when
+   * the prompt is empty (Lyria still cannot take the MP3).
    */
   async function useCreationAsBasis(creation) {
     if (!creation) {
@@ -2227,53 +2534,46 @@
       return;
     }
 
-    if (mod === "text" || mod === "audio") {
-      const prompt = (creation.prompt || "").trim();
-      const extra =
-        mod === "audio"
-          ? formatSongBasisLyrics(creationLyrics(creation))
-          : extractCreationTextBody(creation);
-      let seeded = "";
-      if (prompt && extra && extra !== prompt) {
-        seeded =
-          prompt +
-          (mod === "audio"
-            ? "\n\nLyrics — use [Verse] / [Chorus] / [Bridge] tags for structure:\n\n"
-            : "\n\nBased on this existing text, create an improved version:\n\n") +
-          extra;
-      } else {
-        seeded = prompt || extra || creationTitle(creation);
-      }
-      clearStudioBasis();
-      setStudioPrompt(seeded);
-      if (studioToolsEnabled()) {
-        setStudioSearch(seeded);
-        setStudioToolUse("");
-      }
-      openWindow("form");
-      showToast(
-        mod === "audio"
-          ? "Song prompt and lyrics loaded into Studio (text only — the MP3 is not attached). Edit, then CREATE."
-          : "Text loaded into Studio as basis — edit the prompt, then CREATE."
-      );
-      return;
-    }
-
-    if (mod !== "image" && mod !== "video") {
+    if (
+      mod !== "image" &&
+      mod !== "video" &&
+      mod !== "text" &&
+      mod !== "audio" &&
+      mod !== "pdf"
+    ) {
       showToast("Unsupported creation type.");
       return;
     }
 
-    const ok = await setStudioBasisFromCreation(creation);
+    const collectionMeta =
+      creation && creation.meta && creation.meta.collection;
+    const ok = await addStudioSourceFromCreation(creation);
     if (!ok) return;
     openWindow("form");
     const layout = getExtractedLayout(creation);
-    showToast(
-      layout
-        ? "Screenshot plus extracted layout loaded into Studio. Describe the app or mockup to build, then CREATE."
-        : (mod === "image" ? "Image" : "Video") +
-            " loaded as Studio basis — describe the change, or prompt extract the text, transcribe, or extract the layout, then CREATE."
-    );
+    if (collectionMeta) {
+      showToast(
+        "Collection added to Studio sources — prompt it (OCR, filters, magazine PDF, flipbook, …)."
+      );
+    } else if (mod === "audio") {
+      showToast(
+        "Song added to Studio sources (for reports/transcripts). Lyrics are in the prompt for a new Lyria clip — the MP3 is not sent to Lyria."
+      );
+    } else if (mod === "text" || mod === "pdf") {
+      showToast(
+        (mod === "pdf" ? "PDF" : "Text") +
+          " added to Studio sources — add more files or CREATE a report."
+      );
+    } else if (layout) {
+      showToast(
+        "Screenshot plus extracted layout added to Studio sources. Describe the app or mockup to build, then CREATE."
+      );
+    } else {
+      showToast(
+        (mod === "image" ? "Image" : "Video") +
+          " added to Studio sources — describe a change, prompt extract/transcribe/layout, or add more sources for a report."
+      );
+    }
   }
 
   async function sendCreationToCreator(creation) {
@@ -2286,19 +2586,35 @@
       showToast("Save and Send to Creator is for images and videos.");
       return false;
     }
-    const ok = await setStudioBasisFromCreation(creation, { anonymous: true });
+    const ok = await addStudioSourceFromCreation(creation, { anonymous: true });
     if (!ok) return false;
     openWindow("form");
     showToast(
       (mod === "image" ? "Image" : "Video") +
-        " sent to Creation Studio — describe the change and CREATE for a new Archive item, or prompt extract the text, transcribe, or extract the layout."
+        " added to Creation Studio sources — describe the change and CREATE for a new Archive item, or prompt extract the text, transcribe, or extract the layout."
     );
     return true;
   }
 
   function clearStudioBasis() {
+    state.studioSources = [];
     state.studioBasis = null;
+    state.studioSelectedSourceId = "";
     renderStudioBasisPanel();
+  }
+
+  function removeStudioSource(creationId) {
+    const cid = String(creationId || "");
+    state.studioSources = (state.studioSources || []).filter(
+      (item) => item.creationId !== cid
+    );
+    if (state.studioSelectedSourceId === cid) {
+      const left = state.studioSources;
+      state.studioSelectedSourceId = left.length
+        ? left[left.length - 1].creationId
+        : "";
+    }
+    syncStudioBasisFromSources();
   }
 
   function parseStudioBasisWidth(width) {
@@ -2358,17 +2674,26 @@
     const splitter = $("#studio-basis-splitter");
     const preview = $("#studio-basis-preview");
     const label = $("#studio-basis-label");
+    const listEl = $("#studio-sources-list");
     const layout = $("#studio-layout");
-    const basis = state.studioBasis;
+    const sources = state.studioSources || [];
+    const basis = studioVisualBasis();
+    const selected = studioSelectedSource();
+    state.studioBasis = basis;
+    if (selected && selected.creationId) {
+      state.studioSelectedSourceId = selected.creationId;
+    }
+    closeStudioSourceMenu();
     if (!panel || !preview) return;
 
-    if (!basis) {
+    if (!sources.length) {
       panel.hidden = true;
       if (splitter) splitter.hidden = true;
       if (win) win.classList.remove("has-studio-basis");
       if (layout) layout.classList.remove("has-basis");
-      preview.innerHTML = '<p class="muted">No media loaded</p>';
+      preview.innerHTML = '<p class="muted">No sources</p>';
       if (label) label.textContent = "";
+      if (listEl) listEl.innerHTML = "";
       requestAnimationFrame(() => syncDesktopScrollExtent());
       return;
     }
@@ -2379,105 +2704,261 @@
     if (win) win.classList.add("has-studio-basis");
     applyStudioBasisWidth(state.studioBasisWidth);
 
-    preview.innerHTML = "";
-    if (basis.modality === "video") {
-      const vid = document.createElement("video");
-      vid.src = basis.fileUrl;
-      vid.controls = true;
-      vid.playsInline = true;
-      preview.appendChild(vid);
-    } else {
-      const img = document.createElement("img");
-      img.src = basis.fileUrl;
-      img.alt = basis.title || "Basis image";
-      preview.appendChild(img);
-    }
+    fillStudioSourcePreview(preview, selected);
     if (label) {
-      const hasLayout = !!(basis.layout && typeof basis.layout === "object");
-      const kind = hasLayout
-        ? basis.modality === "video"
-          ? "Video + UI layout"
-          : "Image + UI layout"
-        : basis.modality === "video"
-          ? "Video basis"
-          : "Image basis";
-      if (basis.title) {
-        label.textContent = kind + ": " + basis.title;
+      const n = sources.length;
+      const hasLayout = !!(
+        selected &&
+        selected.layout &&
+        typeof selected.layout === "object"
+      );
+      let kind = n + " source" + (n === 1 ? "" : "s");
+      const viewing = selected
+        ? selected.filename || selected.title || studioSourceKindLabel(selected.modality)
+        : "";
+      if (viewing) kind += " · " + viewing;
+      if (hasLayout) {
+        kind +=
+          selected.modality === "video" ? " · video + UI layout" : " · image + UI layout";
+      }
+      label.textContent = kind + " (max " + MAX_STUDIO_SOURCES + ")";
+    }
+    if (listEl) {
+      listEl.innerHTML = "";
+      listEl.setAttribute("role", "listbox");
+      listEl.setAttribute("aria-label", "Studio sources");
+      sources.forEach((item, index) => {
+        const li = document.createElement("li");
+        li.className = "studio-source-row";
+        if (item.modality === "collection") li.classList.add("is-collection");
+        li.id = "studio-source-row-" + (item.creationId || index);
+        li.setAttribute("role", "option");
+        const isSelected = !!(
+          selected &&
+          item.creationId &&
+          item.creationId === selected.creationId
+        );
+        li.setAttribute("aria-selected", isSelected ? "true" : "false");
+        li.tabIndex = 0;
+        if (isSelected) li.classList.add("is-selected");
+        li.addEventListener("click", () => selectStudioSource(item.creationId));
+        li.addEventListener("keydown", (evt) => {
+          if (evt.key === "Enter" || evt.key === " ") {
+            evt.preventDefault();
+            selectStudioSource(item.creationId);
+          }
+        });
+        if (item.fileUrl && (item.modality === "image" || item.modality === "video")) {
+          if (item.modality === "video") {
+            const vid = document.createElement("video");
+            vid.className = "studio-source-thumb";
+            vid.src = item.fileUrl;
+            vid.muted = true;
+            vid.playsInline = true;
+            li.appendChild(vid);
+          } else {
+            const img = document.createElement("img");
+            img.className = "studio-source-thumb";
+            img.src = item.fileUrl;
+            img.alt = "";
+            li.appendChild(img);
+          }
+        }
+        const kindEl = document.createElement("span");
+        kindEl.className = "studio-source-kind";
+        kindEl.textContent = studioSourceKindLabel(item.modality);
+        li.appendChild(kindEl);
+        const title = document.createElement("span");
+        title.className = "studio-source-title";
+        title.textContent = item.title || item.filename || studioSourceKindLabel(item.modality);
+        title.title = item.filename || title.textContent;
+        li.appendChild(title);
+        const more = document.createElement("button");
+        more.type = "button";
+        more.className = "studio-source-more";
+        more.id = "studio-source-more-" + (item.creationId || index);
+        more.setAttribute("aria-haspopup", "menu");
+        more.setAttribute("aria-expanded", "false");
+        more.setAttribute("aria-controls", "studio-source-menu");
+        more.setAttribute(
+          "aria-label",
+          "Actions for " + (item.filename || item.title || "source")
+        );
+        more.textContent = "⋯";
+        more.addEventListener("click", (evt) => {
+          evt.preventDefault();
+          evt.stopPropagation();
+          const open = more.getAttribute("aria-expanded") === "true";
+          if (open) closeStudioSourceMenu();
+          else openStudioSourceMenu(more, item);
+        });
+        li.appendChild(more);
+        listEl.appendChild(li);
+      });
+      if (selected && selected.creationId) {
+        listEl.setAttribute(
+          "aria-activedescendant",
+          "studio-source-row-" + selected.creationId
+        );
       } else {
-        label.textContent = kind;
+        listEl.removeAttribute("aria-activedescendant");
       }
     }
     requestAnimationFrame(() => syncDesktopScrollExtent());
   }
 
-  async function setStudioBasisFromCreation(creation, opts) {
+  async function addStudioSourceFromCreation(creation, opts) {
     const a = api();
     if (!a || !creation) return false;
     const anonymous = !!(opts && opts.anonymous);
     const mod = creationModality(creation);
-    if (mod !== "image" && mod !== "video") {
-      showToast("Only image or video can be a media basis.");
+    const collectionMeta =
+      creation && creation.meta && creation.meta.collection && typeof creation.meta.collection === "object"
+        ? creation.meta.collection
+        : null;
+    const isCollection = !!collectionMeta;
+    if (
+      !isCollection &&
+      mod !== "image" &&
+      mod !== "video" &&
+      mod !== "text" &&
+      mod !== "audio" &&
+      mod !== "pdf"
+    ) {
+      showToast("This item cannot be a Studio source.");
       return false;
     }
-    const payload = await a.get_media_payload(creation);
-    const previewUrl =
-      (payload && (payload.fileUrl || payload.dataUrl)) || "";
-    if (!payload || !payload.ok || !previewUrl) {
-      showToast((payload && payload.error) || "Could not load media for basis.");
+    if (!Array.isArray(state.studioSources)) state.studioSources = [];
+    const cid = String(creation.id || "");
+    if (cid && state.studioSources.some((item) => item.creationId === cid)) {
+      showToast("Already in Studio sources.");
+      state.studioSelectedSourceId = cid;
+      syncStudioBasisFromSources();
+      return true;
+    }
+    if (state.studioSources.length >= MAX_STUDIO_SOURCES) {
+      showToast("Studio sources are limited to " + MAX_STUDIO_SOURCES + ".");
       return false;
     }
-    state.studioBasis = {
-      creationId: creation.id,
-      modality: mod,
-      fileUrl: previewUrl,
-      mimeType: payload.mimeType || creation.mimeType || "",
+    let fileUrl = "";
+    let mimeType = creation.mimeType || "";
+    if (mod === "image" || mod === "video") {
+      const payload = await a.get_media_payload(creation);
+      const previewUrl =
+        (payload && (payload.fileUrl || payload.dataUrl)) || "";
+      if (!payload || !payload.ok || !previewUrl) {
+        showToast((payload && payload.error) || "Could not load media for sources.");
+        return false;
+      }
+      fileUrl = previewUrl;
+      mimeType = payload.mimeType || mimeType;
+    } else if (mod === "pdf" || mod === "audio") {
+      try {
+        const payload = await a.get_media_payload(creation);
+        const previewUrl =
+          (payload && (payload.fileUrl || payload.dataUrl)) || "";
+        if (payload && payload.ok && previewUrl) {
+          fileUrl = previewUrl;
+          mimeType = payload.mimeType || mimeType;
+        }
+      } catch (_) {
+        /* still attach; preview may be unavailable */
+      }
+    }
+    let textBody = "";
+    if (mod === "text" || isCollection) {
+      textBody = extractCreationTextBody(creation);
+    } else if (mod === "audio") {
+      textBody =
+        formatSongBasisLyrics(creationLyrics(creation)) ||
+        extractCreationTextBody(creation);
+    }
+    state.studioSources.push({
+      creationId: cid,
+      modality: isCollection ? "collection" : mod,
+      fileUrl: fileUrl,
+      mimeType: mimeType,
       title: anonymous ? "" : creationTitle(creation),
+      filename: originalFilenameForCreation(creation, { anonymous: anonymous }),
       mediaPath: creation.mediaPath || "",
       layout: getExtractedLayout(creation),
-    };
+      textBody: textBody,
+      collection: collectionMeta,
+      memberCount: collectionMeta ? Number(collectionMeta.count || 0) : 0,
+    });
+    if (cid) state.studioSelectedSourceId = cid;
     if (!anonymous) {
       const layout = getExtractedLayout(creation);
-      if (layout) {
+      if (layout && !(getStudioPrompt() || "").trim()) {
         setStudioPrompt(formatLayoutBasisPrompt(layout, getStudioPrompt()));
         if (studioToolsEnabled()) {
           setStudioSearch(formatLayoutBasisPrompt(layout, getStudioSearch()));
         }
-      } else if (!(getStudioPrompt() || "").trim() && (creation.prompt || "").trim()) {
+      } else if (mod === "audio" && !(getStudioPrompt() || "").trim()) {
+        const prompt = (creation.prompt || "").trim();
+        const extra = formatSongBasisLyrics(creationLyrics(creation));
+        let seeded = "";
+        if (prompt && extra && extra !== prompt) {
+          seeded =
+            prompt +
+            "\n\nLyrics — use [Verse] / [Chorus] / [Bridge] tags for structure:\n\n" +
+            extra;
+        } else {
+          seeded = prompt || extra || creationTitle(creation);
+        }
+        setStudioPrompt(seeded);
+        if (studioToolsEnabled()) {
+          setStudioSearch(seeded);
+        }
+      } else if (
+        !(getStudioPrompt() || "").trim() &&
+        (mod === "image" || mod === "video") &&
+        (creation.prompt || "").trim()
+      ) {
         setStudioPrompt(creation.prompt.trim());
-        if (
-          studioToolsEnabled() &&
-          !(getStudioSearch() || "").trim() &&
-          (creation.prompt || "").trim()
-        ) {
+        if (studioToolsEnabled() && !(getStudioSearch() || "").trim()) {
           setStudioSearch(creation.prompt.trim());
         }
       }
     }
-    renderStudioBasisPanel();
+    syncStudioBasisFromSources();
     return true;
+  }
+
+  async function setStudioBasisFromCreation(creation, opts) {
+    return addStudioSourceFromCreation(creation, opts);
+  }
+
+  async function addImportedCreationsAsSources(creations) {
+    const items = Array.isArray(creations) ? creations : creations ? [creations] : [];
+    let added = 0;
+    for (let i = 0; i < items.length; i++) {
+      const creation = items[i];
+      if (!creation) continue;
+      rememberImportedCreation(creation);
+      const ok = await addStudioSourceFromCreation(creation);
+      if (ok) added += 1;
+      else if ((state.studioSources || []).length >= MAX_STUDIO_SOURCES) break;
+    }
+    return added;
   }
 
   async function studioLoadTextFile() {
     const a = api();
     if (!a) return;
     try {
-      const res = await a.import_text_file(false);
+      const res = await a.import_text_file(true);
       if (!res || res.cancelled) return;
       if (!res.ok) {
         showToast(res.error || "Import failed");
         return;
       }
-      clearStudioBasis();
-      setStudioPrompt(res.text || "");
-      if (studioToolsEnabled()) {
-        setStudioSearch(res.text || "");
+      if (res.creation) {
+        const added = await addImportedCreationsAsSources([res.creation]);
+        if (!added) return;
       }
       openWindow("form");
-      showToast(
-        studioToolsEnabled()
-          ? "Text loaded into Search — edit Search / Tool Use and CREATE when ready."
-          : "Text loaded into Studio prompt — edit and CREATE when ready."
-      );
+      showToast("Text added to Studio sources — add more files or CREATE a report.");
     } catch (err) {
       showToast("Load failed: " + err);
     }
@@ -2486,7 +2967,7 @@
   async function studioLoadMediaFile(modality) {
     const a = api();
     if (!a) return;
-    beginBusy("Loading " + modality, "Reading file for Studio basis…", {
+    beginBusy("Loading " + modality, "Reading file for Studio sources…", {
       delayMs: 0,
     });
     try {
@@ -2496,13 +2977,116 @@
         showToast(res.error || "Import failed");
         return;
       }
-      rememberImportedCreation(res.creation);
-      const ok = await setStudioBasisFromCreation(res.creation);
-      if (!ok) return;
+      const added = await addImportedCreationsAsSources([res.creation]);
+      if (!added) return;
       openWindow("form");
       showToast(
         (modality === "image" ? "Image" : "Video") +
-          " loaded as Studio basis — describe the change, or prompt extract the text, transcribe, or extract the layout, then CREATE."
+          " added to Studio sources — describe a change, extract/transcribe, or add more sources for a report."
+      );
+    } catch (err) {
+      showToast("Load failed: " + err);
+    } finally {
+      endBusy("Ready");
+    }
+  }
+
+  async function studioLoadPdfFile() {
+    const a = api();
+    if (!a || typeof a.import_pdf_file !== "function") {
+      showToast("PDF import is not available.");
+      return;
+    }
+    beginBusy("Loading PDF", "Reading file for Studio sources…", { delayMs: 0 });
+    try {
+      const res = await a.import_pdf_file();
+      if (!res || res.cancelled) return;
+      if (!res.ok) {
+        showToast(res.error || "Import failed");
+        return;
+      }
+      const added = await addImportedCreationsAsSources([res.creation]);
+      if (!added) return;
+      openWindow("form");
+      showToast("PDF added to Studio sources — add more files or CREATE a report.");
+    } catch (err) {
+      showToast("Load failed: " + err);
+    } finally {
+      endBusy("Ready");
+    }
+  }
+
+  async function studioLoadSourceFiles() {
+    const a = api();
+    if (!a || typeof a.import_studio_sources !== "function") {
+      showToast("Source import is not available.");
+      return;
+    }
+    beginBusy("Loading files", "Importing Studio sources…", { delayMs: 0 });
+    try {
+      const res = await a.import_studio_sources(
+        (state.studioSources || []).length
+      );
+      if (!res || res.cancelled) return;
+      if (!res.ok) {
+        showToast(res.error || "Import failed");
+        return;
+      }
+      const added = await addImportedCreationsAsSources(res.creations || []);
+      openWindow("form");
+      const skipped = (res.skipped || []).length;
+      showToast(
+        added
+          ? added +
+              " file" +
+              (added === 1 ? "" : "s") +
+              " added to Studio sources" +
+              (skipped ? " (" + skipped + " skipped)" : "") +
+              "."
+          : "No files added."
+      );
+    } catch (err) {
+      showToast("Load failed: " + err);
+    } finally {
+      endBusy("Ready");
+    }
+  }
+
+  async function studioLoadSourceFolder(opts) {
+    const a = api();
+    if (!a || typeof a.import_studio_sources_folder !== "function") {
+      showToast("Folder import is not available.");
+      return;
+    }
+    const recursive = !!(opts && opts.recursive);
+    beginBusy(
+      recursive ? "Loading folder (recursive)" : "Loading folder",
+      "Importing Studio sources…",
+      { delayMs: 0 }
+    );
+    try {
+      const res = await a.import_studio_sources_folder(
+        (state.studioSources || []).length,
+        recursive
+      );
+      if (!res || res.cancelled) return;
+      if (!res.ok) {
+        showToast(res.error || "Import failed");
+        return;
+      }
+      const added = await addImportedCreationsAsSources(res.creations || []);
+      openWindow("form");
+      const skipped = (res.skipped || []).length;
+      const collection = !!res.collection;
+      showToast(
+        added
+          ? (collection ? "Collection added to Studio sources" : added +
+              " file" +
+              (added === 1 ? "" : "s") +
+              " added from folder") +
+              (skipped ? " (" + skipped + " skipped)" : "") +
+              "."
+          : "No files added."
       );
     } catch (err) {
       showToast("Load failed: " + err);
@@ -2691,6 +3275,7 @@
     const btn = $("#menu-app-btn");
     if (panel) panel.hidden = true;
     if (btn) btn.setAttribute("aria-expanded", "false");
+    closeStudioSourceMenu();
   }
 
   function toggleAppMenu(force) {
@@ -2699,6 +3284,7 @@
     if (!panel || !btn) return;
     const open = typeof force === "boolean" ? force : panel.hidden;
     if (open) {
+      closeStudioSourceMenu();
       panel.hidden = false;
       btn.setAttribute("aria-expanded", "true");
     } else {
@@ -3670,9 +4256,149 @@
     return !t || /^response$/i.test(t);
   }
 
+  function isIllustratedReport(creation) {
+    const layout = creation && creation.meta && creation.meta.reportLayout;
+    return !!(layout && Array.isArray(layout.sections) && layout.sections.length);
+  }
+
+  function isStudioReportDocument(creation) {
+    const job = String(
+      (creation && creation.meta && creation.meta.studioJob) || ""
+    ).toLowerCase();
+    if (job === "report") return true;
+    return isIllustratedReport(creation);
+  }
+
+  function reportFigures(creation) {
+    const figs = creation && creation.meta && creation.meta.reportFigures;
+    if (!Array.isArray(figs)) return [];
+    return figs.filter((fig) => fig && fig.id && fig.mediaPath);
+  }
+
+  function illustratedReportHtml(creation, urlByFigId) {
+    const layout = (creation && creation.meta && creation.meta.reportLayout) || {};
+    const urls = urlByFigId || {};
+    let html = '<article class="studio-report">';
+    const title = String(layout.title || creationTitle(creation) || "").trim();
+    if (title) html += "<h1>" + escapeHtml(title) + "</h1>";
+    (layout.sections || []).forEach((sec) => {
+      if (!sec) return;
+      html += '<section class="studio-report-section">';
+      const heading = String(sec.heading || "").trim();
+      if (heading) html += "<h2>" + escapeHtml(heading) + "</h2>";
+      const paras = Array.isArray(sec.paragraphs) ? sec.paragraphs : [];
+      paras.forEach((para) => {
+        const text = String(para || "").trim();
+        if (text) html += "<p>" + escapeHtml(text) + "</p>";
+      });
+      const figId = String(sec.figureId || "").trim();
+      if (figId) {
+        const src = urls[figId] || "";
+        const cap = String(sec.figureCaption || "").trim();
+        html += '<figure class="studio-report-figure">';
+        html +=
+          '<img class="studio-report-img" data-figure-id="' +
+          escapeHtml(figId) +
+          '" alt="' +
+          escapeHtml(cap || "Figure") +
+          '"' +
+          (src ? ' src="' + escapeHtml(src) + '"' : "") +
+          " />";
+        if (cap) html += "<figcaption>" + escapeHtml(cap) + "</figcaption>";
+        html += "</figure>";
+      }
+      html += "</section>";
+    });
+    html += "</article>";
+    return html;
+  }
+
+  async function loadReportFigureUrls(creation) {
+    const map = {};
+    const a = api();
+    if (!a) return map;
+    const figures = reportFigures(creation);
+    await Promise.all(
+      figures.map(async (fig) => {
+        try {
+          const res = await a.get_media_payload({
+            mediaPath: fig.mediaPath,
+            mimeType: fig.mimeType || "image/png",
+            modality: "image",
+          });
+          const src = res && res.ok ? res.fileUrl || res.dataUrl || "" : "";
+          if (src) map[fig.id] = src;
+        } catch (_) {
+          /* figure stays as an empty slot */
+        }
+      })
+    );
+    return map;
+  }
+
+  function waitForReportImages(root) {
+    const imgs = Array.from(
+      (root && root.querySelectorAll("img.studio-report-img")) || []
+    );
+    return Promise.all(
+      imgs.map((img) => {
+        if (!img.getAttribute("src")) return Promise.resolve();
+        if (typeof img.decode === "function") {
+          return img.decode().catch(() => {});
+        }
+        return new Promise((resolve) => {
+          if (img.complete && img.naturalWidth) {
+            resolve();
+            return;
+          }
+          const done = () => resolve();
+          img.addEventListener("load", done, { once: true });
+          img.addEventListener("error", done, { once: true });
+        });
+      })
+    );
+  }
+
+  async function fillIllustratedReportFigures(root, creation) {
+    if (!root || !isIllustratedReport(creation)) return;
+    const reportId = creation && creation.id;
+    const urls = await loadReportFigureUrls(creation);
+    if (!root.isConnected) return;
+    if (reportId && state.active && state.active.id !== reportId) return;
+    root.querySelectorAll("img.studio-report-img[data-figure-id]").forEach((img) => {
+      const id = img.getAttribute("data-figure-id");
+      const src = id ? urls[id] : "";
+      if (src) img.src = src;
+    });
+    await waitForReportImages(root);
+  }
+
   function renderDocTab(creation) {
+    if (isIllustratedReport(creation)) {
+      return illustratedReportHtml(creation, {});
+    }
     const meta = creation.meta || {};
     let html = "";
+
+    if (creationModality(creation) === "pdf") {
+      html +=
+        '<p class="doc-overview">Selectable-text or image PDF. Use <strong>Save PDF…</strong> to copy the file. Add it to Studio Sources for further jobs.</p>';
+      html += '<div id="viewer-pdf-embed" class="doc-pdf-wrap"></div>';
+      const ads = getSkippedAds(creation);
+      if (ads.length) {
+        html += '<div class="skipped-ads"><strong>Skipped ads (review)</strong><ul>';
+        ads.forEach((ad) => {
+          html +=
+            "<li>" +
+            escapeHtml(String((ad && ad.filename) || "page")) +
+            " — " +
+            escapeHtml(String((ad && ad.reason) || "Skipped")) +
+            "</li>";
+        });
+        html +=
+          "</ul><p class=\"muted\">Ad detection is model judgment. Review before you rely on this PDF.</p></div>";
+      }
+    }
 
     if (creation.prompt) {
       html +=
@@ -3740,6 +4466,92 @@
         "</em></p>";
     }
     return html;
+  }
+
+  async function fillPdfEmbed(root, creation) {
+    if (!root || creationModality(creation) !== "pdf") return;
+    const host = root.querySelector("#viewer-pdf-embed");
+    if (!host) return;
+    const a = api();
+    if (!a) return;
+    try {
+      const res = await a.get_media_payload(creation);
+      const src = res && (res.fileUrl || res.dataUrl);
+      if (!res || !res.ok || !src) {
+        host.innerHTML = '<p class="muted">PDF could not be loaded.</p>';
+        return;
+      }
+      host.innerHTML =
+        '<iframe class="doc-pdf-frame" title="PDF" src="' +
+        escapeHtml(src) +
+        '"></iframe>';
+    } catch (err) {
+      host.innerHTML =
+        '<p class="muted">PDF could not be loaded: ' +
+        escapeHtml(String(err)) +
+        "</p>";
+    }
+  }
+
+  function renderFlipbookTab(creation) {
+    const fb = getFlipbook(creation);
+    const pages = fb ? fb.pages : [];
+    const total = pages.length;
+    let index = Number(state.flipbookIndex || 0);
+    if (!Number.isFinite(index) || index < 0) index = 0;
+    if (index >= total) index = Math.max(0, total - 1);
+    state.flipbookIndex = index;
+    const page = pages[index] || {};
+    let html = '<div class="flipbook-pane">';
+    html += '<div class="flipbook-toolbar">';
+    html +=
+      '<button type="button" id="btn-flip-prev"' +
+      (index <= 0 ? " disabled" : "") +
+      ">Previous</button>";
+    html +=
+      '<span class="muted">Page ' +
+      (total ? index + 1 : 0) +
+      " of " +
+      total +
+      "</span>";
+    html +=
+      '<button type="button" id="btn-flip-next"' +
+      (index >= total - 1 ? " disabled" : "") +
+      ">Next</button>";
+    html += "</div>";
+    html +=
+      '<div class="flipbook-stage"><img id="flipbook-image" alt="' +
+      escapeHtml(String(page.title || "Page")) +
+      '" /></div>';
+    html +=
+      '<p class="muted">' +
+      escapeHtml(String(page.title || "")) +
+      "</p></div>";
+    return html;
+  }
+
+  async function loadFlipbookPage(creation) {
+    const fb = getFlipbook(creation);
+    if (!fb) return;
+    const img = $("#flipbook-image");
+    if (!img) return;
+    const pages = fb.pages || [];
+    const page = pages[state.flipbookIndex || 0];
+    if (!page) return;
+    const a = api();
+    if (!a) return;
+    try {
+      const res = await a.get_media_payload({
+        id: page.id,
+        mediaPath: page.mediaPath,
+        mimeType: page.mimeType,
+        modality: "image",
+      });
+      const src = res && (res.fileUrl || res.dataUrl);
+      if (res && res.ok && src) img.src = src;
+    } catch (_) {
+      /* ignore */
+    }
   }
 
   function renderMediaPlaceholder(creation, modality) {
@@ -3897,6 +4709,19 @@
     return String(creation.meta.extractedText || "").trim();
   }
 
+  function getSkippedAds(creation) {
+    const ads = creation && creation.meta && creation.meta.skippedAds;
+    return Array.isArray(ads) ? ads : [];
+  }
+
+  function getFlipbook(creation) {
+    const fb = creation && creation.meta && creation.meta.flipbook;
+    if (!fb || typeof fb !== "object") return null;
+    const pages = Array.isArray(fb.pages) ? fb.pages : [];
+    if (pages.length < 2) return null;
+    return fb;
+  }
+
   function getExtractedLayout(creation) {
     if (!creation || !creation.meta) return null;
     const layout = creation.meta.extractedLayout;
@@ -3951,8 +4776,8 @@
       html +=
         '<p class="muted">' +
         (modality === "video"
-          ? "No layout yet. Send this clip to Creation Studio (Use as Basis or Save and Send to Creator), then prompt <strong>extract the layout</strong> to inspect a still frame for windows, buttons, and other chrome."
-          : "No layout yet. Send this image to Creation Studio (Use as Basis or Save and Send to Creator), then prompt <strong>extract the layout</strong> to look for UI chrome (windows, buttons, fields) and build coordinate data.") +
+          ? "No layout yet. Add this clip to Creation Studio (Use as Basis, or editor Save and Send to Creator), then prompt <strong>extract the layout</strong> to inspect a still frame for windows, buttons, and other chrome."
+          : "No layout yet. Add this image to Creation Studio (Use as Basis, or editor Save and Send to Creator), then prompt <strong>extract the layout</strong> to look for UI chrome (windows, buttons, fields) and build coordinate data.") +
         "</p>";
       html += "</div>";
       return html;
@@ -4080,8 +4905,8 @@
       html +=
         '<p class="muted">' +
         (modality === "video"
-          ? "No transcript yet. Send this clip to Creation Studio (Use as Basis or Save and Send to Creator), then prompt <strong>transcribe</strong> to pull speech (or on-screen text)."
-          : "No text extracted yet. Send this image to Creation Studio (Use as Basis or Save and Send to Creator), then prompt <strong>extract the text</strong> to OCR it.") +
+          ? "No transcript yet. Add this clip to Creation Studio (Use as Basis), then prompt <strong>transcribe</strong> or attach more sources and CREATE a report."
+          : "No text extracted yet. Add this image to Creation Studio (Use as Basis), then prompt <strong>extract the text</strong> or attach more sources and CREATE a report.") +
         "</p>";
     } else {
       html +=
@@ -4101,8 +4926,8 @@
     return (
       '<div class="viewer-empty">' +
       "<p>Open a <strong>text</strong> file, <strong>image</strong>, <strong>video</strong>, " +
-      "or <strong>song</strong>. Tabs and tools change to match that type.</p>" +
-      '<p class="muted">You can also generate in Creation Studio or pick an item in Archives.</p>' +
+      "<strong>song</strong>, or <strong>PDF</strong>. Tabs and tools change to match that type.</p>" +
+      '<p class="muted">You can also generate in Creation Studio, add items as <strong>Sources</strong>, or pick an item in Archives.</p>' +
       "</div>"
     );
   }
@@ -4155,6 +4980,15 @@
   }
 
   function renderDocument(creation) {
+    if (
+      creation &&
+      state.active &&
+      creation.id &&
+      state.active.id &&
+      creation.id !== state.active.id
+    ) {
+      state.flipbookIndex = 0;
+    }
     state.active = creation;
     const canvas = $("#doc-canvas");
     const groundingTab = $("#tab-grounding");
@@ -4195,10 +5029,34 @@
       model +
       (created ? " · " + created : "");
 
-    const tab = state.viewerTab || (modality === "text" ? "doc" : "media");
+    const tab = state.viewerTab || (modality === "text" || modality === "pdf" ? "doc" : "media");
     canvas.classList.remove("doc-canvas-reading");
 
-    if (isMediaModality(modality)) {
+    if (tab === "flipbook" && getFlipbook(creation)) {
+      canvas.style.background = "#111";
+      canvas.style.color = "#eee";
+      canvas.style.fontFamily = "var(--ui-font)";
+      canvas.innerHTML = renderFlipbookTab(creation);
+      const prev = $("#btn-flip-prev");
+      const next = $("#btn-flip-next");
+      if (prev) {
+        prev.addEventListener("click", () => {
+          state.flipbookIndex = Math.max(0, (state.flipbookIndex || 0) - 1);
+          renderDocument(creation);
+        });
+      }
+      if (next) {
+        next.addEventListener("click", () => {
+          const pages = (getFlipbook(creation) || {}).pages || [];
+          state.flipbookIndex = Math.min(
+            pages.length - 1,
+            (state.flipbookIndex || 0) + 1
+          );
+          renderDocument(creation);
+        });
+      }
+      void loadFlipbookPage(creation);
+    } else if (isMediaModality(modality)) {
       canvas.style.background = "#111";
       canvas.style.color = "#eee";
       canvas.style.fontFamily = "var(--ui-font)";
@@ -4222,6 +5080,11 @@
         canvas.innerHTML = renderMediaPlaceholder(creation, modality);
         loadMediaIntoCanvas(creation);
       }
+    } else if (tab === "extracted" && getExtractedText(creation)) {
+      canvas.style.background = "#ffffff";
+      canvas.style.color = "#000000";
+      canvas.style.fontFamily = "var(--ui-font)";
+      canvas.innerHTML = renderExtractedTab(creation);
     } else if (tab === "grounding") {
       canvas.style.background = "#ffffff";
       canvas.style.color = "#000000";
@@ -4233,6 +5096,12 @@
       canvas.style.color = "";
       canvas.style.fontFamily = "var(--ui-font)";
       canvas.innerHTML = renderDocTab(creation);
+      if (isIllustratedReport(creation)) {
+        void fillIllustratedReportFigures(canvas, creation);
+      }
+      if (modality === "pdf") {
+        void fillPdfEmbed(canvas, creation);
+      }
     }
 
     openWindow("viewer");
@@ -4267,6 +5136,19 @@
       .replace(/[^\w\-]+/g, "_")
       .replace(/_+/g, "_")
       .slice(0, 60) || "creation";
+  }
+
+  async function mediaSaveBaseName(creation) {
+    const a = api();
+    if (!a || !creation) return exportBaseName(creation);
+    try {
+      const res = await a.suggest_media_filename(creation);
+      const name = res && res.ok && res.filename ? String(res.filename).trim() : "";
+      if (name && !/[\\/]/.test(name)) return name;
+    } catch (_) {
+      /* fall back to the prompt slug */
+    }
+    return exportBaseName(creation);
   }
 
   function buildTextExportBodyHtml(creation, theme) {
@@ -4339,8 +5221,18 @@
       "font-size:14px",
       "line-height:1.35",
     ].join(";");
-    host.innerHTML = buildTextExportBodyHtml(creation, theme);
+    if (isIllustratedReport(creation)) {
+      host.style.background = "#ffffff";
+      host.style.color = "#111111";
+      const urls = await loadReportFigureUrls(creation);
+      host.innerHTML = illustratedReportHtml(creation, urls);
+    } else {
+      host.innerHTML = buildTextExportBodyHtml(creation, theme);
+    }
     document.body.appendChild(host);
+    if (isIllustratedReport(creation)) {
+      await waitForReportImages(host);
+    }
 
     await new Promise((resolve) =>
       requestAnimationFrame(() => requestAnimationFrame(resolve))
@@ -4743,7 +5635,13 @@
           showToast((payload && payload.error) || "Image not found");
           return;
         }
-        const base = exportBaseName(state.active);
+        beginBusy("Save", "Choosing a filename…", { delayMs: 0 });
+        let base = exportBaseName(state.active);
+        try {
+          base = await mediaSaveBaseName(state.active);
+        } finally {
+          endBusy("Ready");
+        }
         if (format === "png") {
           const res = await a.save_binary_file_dialog(base + ".png", payload.dataUrl);
           if (res.ok) {
@@ -4787,7 +5685,13 @@
     // Text: render full body offscreen so parent window overflow cannot clip it
     showToast(format === "pdf" ? "Building PDF…" : "Capturing PNG…");
     try {
-      const base = exportBaseName(state.active);
+      beginBusy("Save", "Choosing a filename…", { delayMs: 0 });
+      let base = exportBaseName(state.active);
+      try {
+        base = await mediaSaveBaseName(state.active);
+      } finally {
+        endBusy("Ready");
+      }
       if (format === "png") {
         const pngDataUrl = await withOffscreenTextExport(state.active, (el, opts) =>
           window.htmlToImage.toPng(el, opts)
@@ -4829,10 +5733,12 @@
   }
 
   function creationModalityLabel(creation) {
+    if (isStudioReportDocument(creation)) return "Report";
     const m = creationModality(creation);
     if (m === "image") return "Image";
     if (m === "video") return "Video";
     if (m === "audio") return "Audio";
+    if (m === "pdf") return "PDF";
     return "Text";
   }
 
@@ -5096,12 +6002,14 @@
 
   function creationModality(creation) {
     if (!creation) return "text";
+    if (isStudioReportDocument(creation)) return "text";
     const m = String(creation.modality || "").toLowerCase();
-    if (m === "image" || m === "video" || m === "text" || m === "audio") return m;
+    if (m === "image" || m === "video" || m === "text" || m === "audio" || m === "pdf") return m;
     if (creation.mediaPath) {
       const mime = String(creation.mimeType || "").toLowerCase();
       if (mime.startsWith("video/")) return "video";
       if (mime.startsWith("audio/")) return "audio";
+      if (mime === "application/pdf") return "pdf";
       return "image";
     }
     return "text";
@@ -5142,6 +6050,7 @@
     const tabDoc = $("#tab-doc");
     const tabMedia = $("#tab-media");
     const tabExtracted = $("#tab-extracted");
+    const tabFlipbook = $("#tab-flipbook");
     const tabLayout = $("#tab-layout");
     const tabGrounding = $("#tab-grounding");
     if (tabs) tabs.hidden = !creation;
@@ -5155,7 +6064,9 @@
         modality === "video" ? "Video" : modality === "audio" ? "Audio" : "Image";
     }
     if (tabExtracted) {
-      tabExtracted.hidden = !isMedia || modality === "audio";
+      const showExtracted =
+        !!extracted && (isMedia || modality === "pdf" || modality === "text");
+      tabExtracted.hidden = !showExtracted || modality === "audio";
       const kind =
         creation &&
         creation.meta &&
@@ -5163,18 +6074,23 @@
       tabExtracted.textContent =
         kind === "transcript" ? "Transcript" : "Extracted";
     }
+    if (tabFlipbook) tabFlipbook.hidden = !getFlipbook(creation);
     if (tabLayout) tabLayout.hidden = !isMedia || modality === "audio";
     if (tabGrounding) {
       const sources = (creation && creation.groundingSources) || [];
       tabGrounding.hidden = !creation || (isMedia && !sources.length);
     }
 
-    const showTxt = modality === "text" || (isMedia && !!extracted) || !!lyrics;
+    const showTxt =
+      modality === "text" ||
+      (isMedia && !!extracted) ||
+      (modality === "pdf" && !!extracted) ||
+      !!lyrics;
     const hasLayout = !!getExtractedLayout(creation);
     const exportLayout = state.viewerTab === "layout" && hasLayout;
     const showPng = modality === "text" || modality === "image" || exportLayout;
     const showPdf = modality === "text" || modality === "image" || exportLayout;
-    const showMp4 = modality === "video" || modality === "audio";
+    const showMp4 = modality === "video" || modality === "audio" || modality === "pdf";
     const showVoice = modality === "text";
     const showEditImage = modality === "image";
     const showEditVideo = modality === "video";
@@ -5210,7 +6126,11 @@
       // Native media file — images use Save PNG / Save PDF
       $("#btn-export-media").hidden = !showMp4;
       $("#btn-export-media").textContent =
-        modality === "audio" ? "Save MP3…" : "Save MP4…";
+        modality === "audio"
+          ? "Save MP3…"
+          : modality === "pdf"
+            ? "Save PDF…"
+            : "Save MP4…";
     }
     if ($("#btn-edit-image")) $("#btn-edit-image").hidden = !showEditImage;
     if ($("#btn-edit-video")) $("#btn-edit-video").hidden = !showEditVideo;
@@ -5267,7 +6187,7 @@
     if (!hint) return;
     const resolved = (cfg.media_resolved || "").trim();
     hint.textContent =
-      "Only image, video, and song files go here (PNG, MP4, MP3). " +
+      "Image, video, song, and PDF files go here (PNG, MP4, MP3, PDF). " +
       "Text, lyrics, prompts, and metadata stay in archives.json — you do not need to Export to keep them. " +
       "Default is the media folder next to the app. After Save you can move existing media files into the new folder; " +
       "declining leaves them where they are. Archives still opens items left in the old project media folder." +
@@ -5932,18 +6852,24 @@
     endBusy("Ready");
     const layout = getExtractedLayout(creation);
     const extractedText = getExtractedText(creation);
-    const sameBasis =
-      !!state.studioBasis &&
-      !!creation.id &&
-      creation.id === state.studioBasis.creationId;
+    const sourceHit = (state.studioSources || []).some(
+      (item) => item.creationId && item.creationId === creation.id
+    );
     const studioJob = String(
       (creation.meta && creation.meta.studioJob) || ""
     ).toLowerCase();
-    const extractedThisJob = sameBasis && studioJob === "layout" && !!layout;
+    const extractedThisJob = sourceHit && studioJob === "layout" && !!layout;
     const extractedTextThisJob =
-      sameBasis && studioJob === "extract" && !!extractedText;
+      sourceHit && studioJob === "extract" && !!extractedText;
     if (extractedThisJob) {
-      state.studioBasis.layout = layout;
+      const src = (state.studioSources || []).find(
+        (item) => item.creationId === creation.id
+      );
+      if (src) src.layout = layout;
+      if (state.studioBasis && state.studioBasis.creationId === creation.id) {
+        state.studioBasis.layout = layout;
+      }
+      if (creation.id) state.studioSelectedSourceId = creation.id;
       renderStudioBasisPanel();
       setStudioPrompt(formatLayoutBasisPrompt(layout, ""));
       if (studioToolsEnabled()) {
@@ -5951,10 +6877,12 @@
       }
       state.viewerTab = "layout";
     } else if (extractedTextThisJob) {
+      if (creation.id) state.studioSelectedSourceId = creation.id;
       renderStudioBasisPanel();
       state.viewerTab = "extracted";
-    } else if (state.studioBasis) {
+    } else if ((state.studioSources || []).length || state.studioBasis) {
       clearStudioBasis();
+      if (studioJob === "report") state.viewerTab = "doc";
     }
     state.creations = [creation].concat(
       state.creations.filter((c) => c.id !== creation.id)
@@ -5984,6 +6912,10 @@
         kind === "transcript"
           ? "Transcript ready. It is on the Extracted tab."
           : "Extracted text ready. It is on the Extracted tab."
+      );
+    } else if (studioJob === "report") {
+      showToast(
+        "Report ready. Pictures from your sources are on the page — Export PDF to save it."
       );
     }
   }
@@ -6365,59 +7297,101 @@
         searchQuery = search;
         prompt = toolUse;
       } else if (!prompt) {
-        showToast("Enter a prompt to create.");
-        return;
+        if ((state.studioSources || []).length) {
+          prompt = DEFAULT_SOURCES_REPORT_PROMPT;
+        } else {
+          showToast("Enter a prompt to create.");
+          return;
+        }
       }
 
-      const basisId =
-        (state.studioBasis && state.studioBasis.creationId) || "";
+      const selected = studioSelectedSource();
+      const visualBasis =
+        selected &&
+        (selected.modality === "image" || selected.modality === "video")
+          ? selected
+          : state.studioBasis;
+      const sourceIds = (state.studioSources || [])
+        .map((item) => item.creationId)
+        .filter(Boolean);
+      const basisId = (visualBasis && visualBasis.creationId) || "";
       // Prefer prompt intent (video/image keywords); else keep basis modality.
       // "Generate a video…" + image basis → image-to-video, not img2img.
       // "Extract the layout" / "extract the text" / "transcribe" are analysis, not img2img.
+      // Two or more sources (or a text/PDF/audio-only tray) default to a report.
       let compatPrompt = prompt;
       let wantsMedia = false;
-      if (basisId && state.studioBasis) {
-        const lower = prompt.toLowerCase();
-        const wantsLayoutExtract =
-          /\b(extract|find|detect|analyze|map|inspect|pull|grab|get)\b[\s\S]{0,40}\b(the\s+)?(ui\s+)?layout\b/.test(
+      const lower = prompt.toLowerCase();
+      const wantsLayoutExtract =
+        /\b(extract|find|detect|analyze|map|inspect|pull|grab|get)\b[\s\S]{0,40}\b(the\s+)?(ui\s+)?layout\b/.test(
+          lower
+        ) ||
+        /\bextract\b[\s\S]{0,40}\b(ui(\s+chrome)?|coordinates?|regions?)\b/.test(
+          lower
+        ) ||
+        /\b(ui\s+)?layout\s+json\b/.test(lower) ||
+        /\bfind\b[\s\S]{0,32}\b(ui\s+)?chrome\b/.test(lower);
+      const wantsTextExtract =
+        !wantsLayoutExtract &&
+        (/\b(extract|ocr|read|pull|grab|get)\b[\s\S]{0,40}\b(the\s+)?(text|words|captions?|subtitles?)\b/.test(
+          lower
+        ) ||
+          /\bocr\b/.test(lower) ||
+          /\btranscri(be|ption|pt)\b/.test(lower) ||
+          /\bspeech[\s-]?to[\s-]?text\b/.test(lower));
+      const wantsAudio =
+        /\b(create|generate|make|compose|produce|write|score)\b[\s\S]{0,48}\b(music|song|soundtrack|jingle|melody|tune|instrumental|chiptune)\b/.test(
+          lower
+        ) ||
+        /\b(music|song|soundtrack|jingle|melody|chiptune)\s+(of|about|for|in)\b/.test(
+          lower
+        ) ||
+        /\blyria\b/.test(lower) ||
+        /\binstrumental\s+only\b/.test(lower) ||
+        /\b(background|game)\s+(music|soundtrack)\b/.test(lower);
+      const wantsVideo =
+        /\b(create|generate|make|render|produce|shoot|film)\b[\s\S]{0,48}\b(video|clip|animation|footage|movie|cinematic)\b/.test(
+          lower
+        ) ||
+        /\b(turn|convert|transform|morph|change)\b[\s\S]{0,48}\b(into|to)\b[\s\S]{0,24}\b(video|clip|animation|footage|movie)\b/.test(
+          lower
+        ) ||
+        /\b(video|clip|animation|footage)\s+of\b/.test(lower) ||
+        /\banimate\b/.test(lower);
+      const wantsImage =
+        /\b(create|generate|make|render|draw|paint|illustrate)\b[\s\S]{0,40}\b(image|picture|photo|illustration|drawing)\b/.test(
+          lower
+        ) || /\b(image|picture|photo)\s+of\b/.test(lower);
+      const wantsReport =
+        /\b(create|write|make|draft|compose|build|prepare)\b[\s\S]{0,48}\b(a\s+|an\s+|the\s+)?report\b/.test(
+          lower
+        ) ||
+        (/\b(summar(y|ies|ise|ize|ising|izing)|recap|rundown)\b/.test(lower) &&
+          !/\b(into|as|to)\b[\s\S]{0,16}\b(a\s+|an\s+)?(video|clip|animation|image|picture|song|music)\b/.test(
             lower
-          ) ||
-          /\bextract\b[\s\S]{0,40}\b(ui(\s+chrome)?|coordinates?|regions?)\b/.test(
-            lower
-          ) ||
-          /\b(ui\s+)?layout\s+json\b/.test(lower) ||
-          /\bfind\b[\s\S]{0,32}\b(ui\s+)?chrome\b/.test(lower);
-        const wantsTextExtract =
-          !wantsLayoutExtract &&
-          (/\b(extract|ocr|read|pull|grab|get)\b[\s\S]{0,40}\b(the\s+)?(text|words|captions?|subtitles?)\b/.test(
-            lower
-          ) ||
-            /\bocr\b/.test(lower) ||
-            /\btranscri(be|ption|pt)\b/.test(lower) ||
-            /\bspeech[\s-]?to[\s-]?text\b/.test(lower));
-        const wantsAudio =
-          /\b(create|generate|make|compose|produce|write|score)\b[\s\S]{0,48}\b(music|song|soundtrack|jingle|melody|tune|instrumental|chiptune)\b/.test(
-            lower
-          ) ||
-          /\b(music|song|soundtrack|jingle|melody|chiptune)\s+(of|about|for|in)\b/.test(
-            lower
-          ) ||
-          /\blyria\b/.test(lower) ||
-          /\binstrumental\s+only\b/.test(lower) ||
-          /\b(background|game)\s+(music|soundtrack)\b/.test(lower);
-        const wantsVideo =
-          /\b(create|generate|make|render|produce|shoot|film)\b[\s\S]{0,48}\b(video|clip|animation|footage|movie|cinematic)\b/.test(
-            lower
-          ) ||
-          /\b(turn|convert|transform|morph|change)\b[\s\S]{0,48}\b(into|to)\b[\s\S]{0,24}\b(video|clip|animation|footage|movie)\b/.test(
-            lower
-          ) ||
-          /\b(video|clip|animation|footage)\s+of\b/.test(lower) ||
-          /\banimate\b/.test(lower);
-        const wantsImage =
-          /\b(create|generate|make|render|draw|paint|illustrate)\b[\s\S]{0,40}\b(image|picture|photo|illustration|drawing)\b/.test(
-            lower
-          ) || /\b(image|picture|photo)\s+of\b/.test(lower);
+          ) &&
+          !wantsVideo &&
+          !wantsImage &&
+          !wantsAudio);
+      const hasCollection = (state.studioSources || []).some(
+        (item) => item && item.modality === "collection"
+      );
+      const collectionJob =
+        hasCollection ||
+        /\b(skip|ignore).{0,24}\bads?\b/.test(lower) ||
+        /\bmagazine\b/.test(lower) ||
+        /\bflip[\s-]?book\b/.test(lower) ||
+        /\bslideshow\b/.test(lower) ||
+        /\bcontact\s+sheet\b/.test(lower) ||
+        /\b(sepia|grayscale|greyscale|sharpen)\b/.test(lower) ||
+        /\bone\s+pdf\b/.test(lower) ||
+        (sourceIds.length >= 2 &&
+          /\b(every|each|all|these|folder|batch)\b/.test(lower));
+      const reportTray =
+        wantsReport ||
+        (!(wantsLayoutExtract || wantsTextExtract || collectionJob) &&
+          (sourceIds.length >= 2 || (sourceIds.length === 1 && !basisId)));
+      if (basisId && visualBasis && !reportTray && !collectionJob) {
         if (wantsLayoutExtract || wantsTextExtract) {
           wantsMedia = false;
         } else if (wantsAudio) {
@@ -6429,14 +7403,29 @@
         } else if (wantsImage) {
           compatPrompt = "Create an image: " + prompt;
           wantsMedia = true;
-        } else if (state.studioBasis.layout) {
+        } else if (visualBasis.layout) {
           wantsMedia = false;
-        } else if (state.studioBasis.modality === "video") {
+        } else if (visualBasis.modality === "video") {
           compatPrompt = "Generate a video: " + prompt;
           wantsMedia = true;
         } else {
           compatPrompt = "Create an image: " + prompt;
           wantsMedia = true;
+        }
+      } else if (reportTray) {
+        if (wantsReport) {
+          wantsMedia = false;
+        } else if (wantsAudio) {
+          compatPrompt = "Generate music: " + prompt;
+          wantsMedia = true;
+        } else if (wantsVideo) {
+          compatPrompt = "Generate a video: " + prompt;
+          wantsMedia = true;
+        } else if (wantsImage) {
+          compatPrompt = "Create an image: " + prompt;
+          wantsMedia = true;
+        } else {
+          wantsMedia = false;
         }
       }
 
@@ -6504,7 +7493,8 @@
           creationDescription,
           basisId,
           toolAliases,
-          searchQuery
+          searchQuery,
+          sourceIds
         );
       } catch (err) {
         applyGenerationError(err);
@@ -7081,7 +8071,11 @@
       const ext = encoded.mime === "image/png" ? ".png" : ".jpg";
       const creation =
         state.creations.find((c) => c.id === imageEdit.creationId) || state.active;
-      const base = exportBaseName(creation || { title: "image" }) + ext;
+      updateBusy("Choosing a filename…");
+      const stem = creation
+        ? await mediaSaveBaseName(creation)
+        : exportBaseName({ title: "image" });
+      const base = stem + ext;
       const httpRes = await fetch("/api/save-media-file", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -8279,7 +9273,7 @@
     }
     const a = api();
     if (!a) return;
-    beginBusy("Save As", "Rendering edited video…", { delayMs: 0 });
+    beginBusy("Save As", "Rendering and choosing a filename…", { delayMs: 0 });
     try {
       const res = await a.export_edited_video(
         videoEdit.creationId,
@@ -8590,6 +9584,19 @@
     wireStudioBasisSplitter();
 
     document.addEventListener("click", (e) => {
+      if (
+        e.target.closest("#studio-source-menu") ||
+        e.target.closest(".studio-source-more")
+      ) {
+        if (e.target.closest(".app-menu-panel [role='menuitem']")) closeAppMenus();
+        else {
+          const panel = $("#menu-app-panel");
+          const btn = $("#menu-app-btn");
+          if (panel) panel.hidden = true;
+          if (btn) btn.setAttribute("aria-expanded", "false");
+        }
+        return;
+      }
       if (e.target.closest(".app-menu")) {
         if (e.target.closest(".app-menu-panel [role='menuitem']")) closeAppMenus();
         return;
@@ -8600,6 +9607,22 @@
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape") closeAppMenus();
     });
+    window.addEventListener("resize", () => closeStudioSourceMenu());
+    if ($("#studio-basis-panel")) {
+      $("#studio-basis-panel").addEventListener("scroll", () =>
+        closeStudioSourceMenu()
+      );
+    }
+    const sourceMenu = $("#studio-source-menu");
+    if (sourceMenu) {
+      sourceMenu.addEventListener("click", (e) => {
+        const item = e.target.closest("[role='menuitem']");
+        if (!item) return;
+        e.preventDefault();
+        e.stopPropagation();
+        void onStudioSourceMenuAction(item.getAttribute("data-action"));
+      });
+    }
 
     document.addEventListener("focusin", (e) => {
       const el = e.target;
@@ -8654,6 +9677,34 @@
         studioLoadMediaFile("video")
       );
     }
+    if ($("#btn-studio-load-pdf")) {
+      $("#btn-studio-load-pdf").addEventListener("click", () => studioLoadPdfFile());
+    }
+    if ($("#btn-studio-load-files")) {
+      $("#btn-studio-load-files").addEventListener("click", () =>
+        studioLoadSourceFiles()
+      );
+    }
+    if ($("#btn-studio-load-folder")) {
+      $("#btn-studio-load-folder").addEventListener("click", () =>
+        studioLoadSourceFolder()
+      );
+    }
+    if ($("#btn-studio-load-folder-recursive")) {
+      $("#btn-studio-load-folder-recursive").addEventListener("click", () =>
+        studioLoadSourceFolder({ recursive: true })
+      );
+    }
+    if ($("#btn-studio-add-files")) {
+      $("#btn-studio-add-files").addEventListener("click", () =>
+        studioLoadSourceFiles()
+      );
+    }
+    if ($("#btn-studio-add-folder")) {
+      $("#btn-studio-add-folder").addEventListener("click", () =>
+        studioLoadSourceFolder()
+      );
+    }
     if ($("#studio-saved-prompt")) {
       $("#studio-saved-prompt").addEventListener("change", () =>
         onStudioSavedPromptChange()
@@ -8686,7 +9737,7 @@
     if ($("#btn-studio-clear-basis")) {
       $("#btn-studio-clear-basis").addEventListener("click", () => {
         clearStudioBasis();
-        showToast("Media basis cleared");
+        showToast("Studio sources cleared");
       });
     }
     if ($("#btn-viewer-open")) {
@@ -8782,6 +9833,7 @@
       const a = api();
       if (!a) return;
       try {
+        beginBusy("Save", "Choosing a filename…", { delayMs: 0 });
         const txt = await a.export_creation_txt(state.active);
         const suffix =
           modality === "video"
@@ -8791,13 +9843,19 @@
               : modality === "audio"
                 ? "_lyrics.txt"
                 : ".txt";
+        let stem = exportBaseName(state.active);
+        try {
+          stem = await mediaSaveBaseName(state.active);
+        } catch (_) {
+          /* keep prompt slug */
+        }
         const name =
-          modality === "text"
-            ? exportBaseName(state.active) + ".txt"
-            : exportBaseName(state.active) + suffix;
+          modality === "text" ? stem + ".txt" : stem + suffix;
         await a.save_file_dialog(name, txt);
       } catch (err) {
         showToast(String(err));
+      } finally {
+        endBusy("Ready");
       }
     });
 
@@ -8849,8 +9907,17 @@
         if (!state.active) return;
         const a = api();
         if (!a) return;
-        const res = await a.export_creation_media(state.active);
-        if (res.ok) {
+        beginBusy("Save", "Choosing a filename…", { delayMs: 0 });
+        let res;
+        try {
+          res = await a.export_creation_media(state.active);
+        } catch (err) {
+          showToast(String(err));
+          return;
+        } finally {
+          endBusy("Ready");
+        }
+        if (res && res.ok) {
           showToast(
             creationModality(state.active) === "video"
               ? "Saved MP4"

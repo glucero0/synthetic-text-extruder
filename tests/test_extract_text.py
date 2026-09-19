@@ -8,7 +8,10 @@ import threading
 import pytest
 
 from synthetic_text_extruder.api import Api
-from synthetic_text_extruder.creation_utils import build_media_creation
+from synthetic_text_extruder.creation_utils import (
+    build_media_creation,
+    build_text_creation_from_plain,
+)
 from synthetic_text_extruder.extract_text import (
     apply_extraction_fields,
     clear_extraction_fields,
@@ -217,6 +220,95 @@ def test_create_creation_extract_text_from_studio_prompt(tmp_path, monkeypatch):
     assert job["result"]["meta"]["studioJob"] == "extract"
     stored = next(c for c in api.store.load() if c["id"] == "doc_studio_ocr")
     assert get_extracted_text(stored) == "OCR FROM STUDIO"
+
+
+def test_create_creation_extract_named_image_not_last_visual(tmp_path, monkeypatch):
+    api = _api_with_tmp_store(tmp_path, monkeypatch)
+    media_dir = tmp_path / "media"
+    media_dir.mkdir(parents=True, exist_ok=True)
+    (media_dir / "doc_toast.png").write_bytes(b"\x89PNG\r\n\x1a\ntoast")
+    (media_dir / "doc_later.png").write_bytes(b"\x89PNG\r\n\x1a\nlater")
+    toaster = build_media_creation(
+        modality="image",
+        prompt="a toaster on fire",
+        media_path="media/doc_toast.png",
+        mime_type="image/png",
+        title="a toaster on fire",
+        creation_id="doc_toast",
+    )
+    later = build_media_creation(
+        modality="image",
+        prompt="harbor",
+        media_path="media/doc_later.png",
+        mime_type="image/png",
+        title="harbor",
+        creation_id="doc_later",
+    )
+    notes = build_text_creation_from_plain("Notes", prompt="notes", title="Notes")
+    notes["id"] = "doc_notes"
+    api.store.upsert(toaster)
+    api.store.upsert(later)
+    api.store.upsert(notes)
+
+    seen = {}
+
+    def fake_extract(creation, *, config, media_path, progress=None, cancel_event=None):
+        seen["id"] = creation.get("id")
+        return apply_extraction_fields(
+            creation,
+            text="TOASTER OCR",
+            kind="ocr",
+            model="gemini-2.5-flash",
+            provider="gemini",
+        )
+
+    monkeypatch.setattr(
+        "synthetic_text_extruder.extract_text.extract_text_from_creation",
+        fake_extract,
+    )
+    res = api.create_creation(
+        "Prompt",
+        "General",
+        "Custom",
+        True,
+        'extract the text from the image "a toaster on fire"',
+        "doc_later",
+        [],
+        "",
+        ["doc_toast", "doc_notes", "doc_later"],
+    )
+    assert res["ok"] is True, res
+    job = _wait_job(api, res["job_id"])
+    assert job["status"] == "done", job
+    assert seen.get("id") == "doc_toast"
+    assert job["result"]["id"] == "doc_toast"
+    assert get_extracted_text(job["result"]) == "TOASTER OCR"
+
+
+def test_create_creation_extract_unknown_quoted_source_errors(tmp_path, monkeypatch):
+    api = _api_with_tmp_store(tmp_path, monkeypatch)
+    img = build_media_creation(
+        modality="image",
+        prompt="harbor",
+        media_path="media/h.png",
+        mime_type="image/png",
+        title="harbor",
+        creation_id="doc_later",
+    )
+    api.store.upsert(img)
+    res = api.create_creation(
+        "Prompt",
+        "General",
+        "Custom",
+        True,
+        'extract the text from the image "a toaster on fire"',
+        "doc_later",
+        [],
+        "",
+        ["doc_later"],
+    )
+    assert res["ok"] is False
+    assert "toaster on fire" in (res.get("error") or "")
 
 
 def test_create_creation_transcribe_from_studio_prompt(tmp_path, monkeypatch):

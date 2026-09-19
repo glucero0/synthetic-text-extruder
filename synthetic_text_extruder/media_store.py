@@ -28,6 +28,7 @@ EXT_FOR_MIME: dict[str, str] = {
     "audio/x-wav": ".wav",
     "audio/wave": ".wav",
     "audio/ogg": ".ogg",
+    "application/pdf": ".pdf",
 }
 
 MIME_FOR_EXT: dict[str, str] = {
@@ -47,6 +48,7 @@ MIME_FOR_EXT: dict[str, str] = {
     ".ogg": "audio/ogg",
     ".m4a": "audio/mp4",
     ".aac": "audio/aac",
+    ".pdf": "application/pdf",
 }
 
 _TEXT_SUFFIXES = {".txt", ".md", ".markdown", ".csv"}
@@ -150,6 +152,8 @@ def modality_for_path(path: Path) -> str | None:
         return "video"
     if mime.startswith("audio/"):
         return "audio"
+    if mime == "application/pdf" or suffix == ".pdf":
+        return "pdf"
     return None
 
 

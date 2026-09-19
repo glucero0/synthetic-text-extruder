@@ -39,6 +39,8 @@ def test_normalize_and_classify():
     assert classify_model_modality("lyria-3.5") == "audio"
     assert classify_model_modality("lyria-3-pro-preview") == "audio"
     assert normalize_modality("MUSIC") == "audio"
+    assert normalize_modality("pdf") == "pdf"
+    assert normalize_modality("pdf") == "pdf"
 
 
 def test_infer_prompt_modality_image_dragon():
@@ -58,6 +60,25 @@ def test_infer_prompt_modality_video_and_text():
     assert infer_prompt_modality("Compose a chiptune song for a Sega Genesis title screen") == "audio"
     assert infer_prompt_modality("Generate a music clip with dusty vinyl crackle") == "audio"
     assert infer_prompt_modality("create background music, instrumental only") == "audio"
+
+
+def test_infer_prompt_modality_create_report_is_not_video():
+    from synthetic_text_extruder.modality import infer_report_intent
+
+    prompt = (
+        'create a report, include a summary of the video, "doc_1c9b1302da.mp4", '
+        'the image, "doc_7b759c704e.jpg", and the story from '
+        '"a_very_short_story_of_a_dog_being_rescued_by_a_family_of_thr.txt"'
+    )
+    assert infer_report_intent(prompt) is True
+    assert infer_prompt_modality(prompt) == "text"
+    assert infer_prompt_modality("create a video of a toaster") == "video"
+    assert infer_report_intent("generate a video of the harbor") is False
+    assert infer_report_intent("summarize") is True
+    assert infer_prompt_modality("summarize") == "text"
+    assert infer_report_intent("summarize this into a video") is False
+    assert infer_report_intent("create a video summarizing the clips") is False
+    assert infer_prompt_modality("create a video summarizing the clips") == "video"
 
 
 def test_resolve_generation_modality_prompt_wins_over_image_basis():

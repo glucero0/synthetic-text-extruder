@@ -228,7 +228,7 @@ def test_modality_for_path_detects_supported_types(tmp_path):
     assert modality_for_path(tmp_path / "shot.png") == "image"
     assert modality_for_path(tmp_path / "clip.mp4") == "video"
     assert modality_for_path(tmp_path / "song.mp3") == "audio"
-    assert modality_for_path(tmp_path / "secret.pdf") is None
+    assert modality_for_path(tmp_path / "secret.pdf") == "pdf"
     assert modality_for_path(tmp_path / "app.exe") is None
 
 
@@ -262,9 +262,24 @@ def test_open_viewer_file_text(tmp_path, monkeypatch):
     assert "# Hello" in res["creation"]["sections"][0]["content"]
 
 
+def test_open_viewer_file_pdf(tmp_path, monkeypatch):
+    api = _api_with_tmp_store(tmp_path, monkeypatch)
+    src = tmp_path / "brief.pdf"
+    src.write_bytes(b"%PDF-1.4")
+    win = MagicMock()
+    win.create_file_dialog.return_value = str(src)
+    api._window = win
+
+    res = api.open_viewer_file()
+    assert res["ok"] is True
+    assert res["modality"] == "pdf"
+    assert res["creation"]["modality"] == "pdf"
+    assert res["creation"]["mimeType"] == "application/pdf"
+
+
 def test_open_viewer_file_rejects_unsupported(tmp_path, monkeypatch):
     api = _api_with_tmp_store(tmp_path, monkeypatch)
-    src = tmp_path / "payload.pdf"
+    src = tmp_path / "payload.exe"
     src.write_bytes(b"%PDF-1.4")
     win = MagicMock()
     win.create_file_dialog.return_value = str(src)
@@ -442,6 +457,60 @@ def test_export_creation_media_forces_mp3_extension(tmp_path, monkeypatch):
     assert str(captured.get("save_filename") or "").endswith(".mp3")
     types = captured.get("file_types") or ()
     assert any("*.mp3" in str(item) for item in types)
+
+
+def test_export_creation_media_uses_embedding_filename(tmp_path, monkeypatch):
+    api = _api_with_tmp_store(tmp_path, monkeypatch)
+    media_dir = tmp_path / "media"
+    media_dir.mkdir(parents=True, exist_ok=True)
+    src = media_dir / "fox.png"
+    src.write_bytes(b"\x89PNG")
+    prompt = "cinematic wide shot of a red fox in snow at dawn, photorealistic"
+    creation = build_media_creation(
+        modality="image",
+        prompt=prompt,
+        media_path="media/fox.png",
+        mime_type="image/png",
+        title=prompt,
+        creation_id="fox1",
+    )
+    api.store.upsert(creation)
+    api.config["gemini"] = {"api_key": "test-key"}
+
+    monkeypatch.setattr(
+        "synthetic_text_extruder.embedding_filename.suggest_filename_for_creation",
+        lambda *args, **kwargs: "red-fox-snow-dawn",
+    )
+
+    captured: dict[str, object] = {}
+
+    class _Win:
+        def create_file_dialog(self, *_args, **kwargs):
+            captured.update(kwargs)
+            return str(tmp_path / "out")
+
+    api._window = _Win()
+    res = api.export_creation_media(creation)
+    assert res["ok"] is True
+    assert captured.get("save_filename") == "red-fox-snow-dawn.png"
+    stored = next(c for c in api.store.load() if c.get("id") == "fox1")
+    assert stored.get("meta", {}).get("embeddingFilename") == "red-fox-snow-dawn"
+
+
+def test_suggest_media_filename_api(tmp_path, monkeypatch):
+    api = _api_with_tmp_store(tmp_path, monkeypatch)
+    creation = build_media_creation(
+        modality="image",
+        prompt="a lighthouse at dusk",
+        media_path="media/x.png",
+        mime_type="image/png",
+        title="Harbor dusk",
+        creation_id="light1",
+    )
+    api.store.upsert(creation)
+    res = api.suggest_media_filename(creation)
+    assert res["ok"] is True
+    assert res["filename"] == "harbor-dusk"
 
 
 def test_pick_media_folder_mocked_dialog(tmp_path):
