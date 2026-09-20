@@ -53,7 +53,10 @@ PDF_BRIEF_PROMPT = (
 
 def safe_original_filename(name: str | None) -> str:
     """Basename only — never a path — for prompt/clipboard use."""
-    base = Path(str(name or "")).name.strip()
+    # pathlib.Path is OS-specific: on POSIX, "C:\inbox\file.pdf" is one name.
+    # Treat both separators as path parts so Windows uploads still sanitize on Linux.
+    normalized = str(name or "").replace("\\", "/")
+    base = Path(normalized).name.strip()
     if not base or base in {".", ".."}:
         return ""
     if "/" in base or "\\" in base:

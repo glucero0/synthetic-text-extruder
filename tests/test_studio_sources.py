@@ -172,6 +172,8 @@ def test_safe_original_filename_is_basename_only():
     )
 
     assert safe_original_filename(r"C:\inbox\harbor-notes.pdf") == "harbor-notes.pdf"
+    assert safe_original_filename("C:/inbox/harbor-notes.pdf") == "harbor-notes.pdf"
+    assert safe_original_filename(r"inbox\nested\harbor-notes.pdf") == "harbor-notes.pdf"
     assert safe_original_filename("../etc/passwd") == "passwd"
     assert safe_original_filename("..") == ""
     assert original_filename_for_creation(
