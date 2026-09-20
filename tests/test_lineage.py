@@ -14,8 +14,10 @@ from synthetic_text_extruder.creation_utils import (
 from synthetic_text_extruder.lineage import (
     PROMPT_PREVIEW_MAX,
     attach_prompt_step,
+    chain_creation_ids,
     compact_from_modality,
     connected_components,
+    descendant_creation_ids,
     expand_prompt_steps,
     extra_sources_are_lineage_context,
     inspect_lineage_node,
@@ -498,26 +500,179 @@ def test_relabel_lineage_roots_persists_unique_names(tmp_path, monkeypatch):
         title="write a sentence about love",
     )
     good["id"] = "doc_love"
+    named = build_text_creation_from_plain(
+        "notes",
+        prompt="summarize these notes",
+        title="Harbor dusk",
+    )
+    named["id"] = "doc_named"
     api.store.upsert(weak)
     api.store.upsert(good)
+    api.store.upsert(named)
+
+    def fake_suggest(creation, **kwargs):
+        cid = str((creation or {}).get("id") or "")
+        if cid == "doc_weak":
+            return "Red fox"
+        if cid == "doc_love":
+            return "Love note"
+        return str((creation or {}).get("title") or "Lineage")
+
     monkeypatch.setattr(
         "synthetic_text_extruder.embedding_filename.suggest_lineage_label",
-        lambda creation, **kwargs: "Harbor dusk",
+        fake_suggest,
     )
-    res = api.relabel_lineage_roots(["doc_weak", "doc_love"])
+    res = api.relabel_lineage_roots(["doc_weak", "doc_love", "doc_named"])
     assert res["ok"] is True
-    assert res["labels"]["doc_love"] == "write a sentence about love"
-    assert res["labels"]["doc_weak"] == "Harbor dusk"
+    assert res["labels"]["doc_named"] == "Harbor dusk"
+    assert res["labels"]["doc_weak"] == "Red fox"
+    assert res["labels"]["doc_love"] == "Love note"
     stored = api.store.load()
     by_id = {c["id"]: c for c in stored}
-    assert by_id["doc_weak"]["lineageLabel"] == "Harbor dusk"
-    assert "lineageLabel" not in by_id["doc_love"] or by_id["doc_love"].get("lineageLabel") in (
-        None,
-        "",
-    )
+    assert by_id["doc_weak"]["lineageLabel"] == "Red fox"
+    assert by_id["doc_love"]["lineageLabel"] == "Love note"
+    assert by_id["doc_named"]["lineageLabel"] == "Harbor dusk"
     graph = api.lineage_graph("doc_weak")
     titles = {c["rootId"]: c["rootTitle"] for c in graph["components"]}
-    assert titles["doc_weak"] == "Harbor dusk"
+    assert titles["doc_weak"] == "Red fox"
+    assert titles["doc_love"] == "Love note"
+
+    calls: list[str] = []
+
+    def boom(creation, **kwargs):
+        calls.append(str((creation or {}).get("id") or ""))
+        raise AssertionError("named chains must not be relabeled")
+
+    monkeypatch.setattr(
+        "synthetic_text_extruder.embedding_filename.suggest_lineage_label",
+        boom,
+    )
+    again = api.relabel_lineage_roots(["doc_weak", "doc_love", "doc_named"])
+    assert again["updated"] == 0
+    assert calls == []
+    stored2 = {c["id"]: c for c in api.store.load()}
+    assert stored2["doc_weak"]["lineageLabel"] == "Red fox"
+
+
+def test_descendant_creation_ids_follow_derived_from():
+    orig = {"id": "doc_orig", "modality": "image"}
+    mid = {
+        "id": "doc_mid",
+        "modality": "image",
+        "derivedFrom": [{"id": "doc_orig", "role": "basis"}],
+    }
+    child = {
+        "id": "doc_child",
+        "modality": "image",
+        "derivedFrom": [{"id": "doc_mid", "role": "basis"}],
+    }
+    sibling = {
+        "id": "doc_sib",
+        "modality": "image",
+        "derivedFrom": [{"id": "doc_orig", "role": "basis"}],
+    }
+    items = [orig, mid, child, sibling]
+    branch = descendant_creation_ids(items, "doc_mid")
+    assert branch[0] == "doc_mid"
+    assert "doc_child" in branch
+    assert "doc_orig" not in branch
+    assert "doc_sib" not in branch
+    whole = chain_creation_ids(items, "doc_orig")
+    assert set(whole) == {"doc_orig", "doc_mid", "doc_child", "doc_sib"}
+
+
+def test_delete_lineage_branch_removes_descendants(tmp_path, monkeypatch):
+    api = _api_with_tmp_store(tmp_path, monkeypatch)
+    orig = build_media_creation(
+        modality="image",
+        prompt="orig",
+        media_path="media/orig.png",
+        mime_type="image/png",
+        title="orig",
+        creation_id="doc_orig",
+    )
+    mid = build_media_creation(
+        modality="image",
+        prompt="mid",
+        media_path="media/mid.png",
+        mime_type="image/png",
+        title="mid",
+        creation_id="doc_mid",
+    )
+    mid["derivedFrom"] = [{"id": "doc_orig", "role": "basis"}]
+    child = build_media_creation(
+        modality="image",
+        prompt="child",
+        media_path="media/child.png",
+        mime_type="image/png",
+        title="child",
+        creation_id="doc_child",
+    )
+    child["derivedFrom"] = [{"id": "doc_mid", "role": "basis"}]
+    api.store.upsert(orig)
+    api.store.upsert(mid)
+    api.store.upsert(child)
+    res = api.delete_lineage_branch("doc_mid")
+    assert res["ok"] is True
+    ids = {c["id"] for c in res["creations"]}
+    assert "doc_orig" in ids
+    assert "doc_mid" not in ids
+    assert "doc_child" not in ids
+
+
+def test_rename_lineage_root_locks_manual_name(tmp_path, monkeypatch):
+    api = _api_with_tmp_store(tmp_path, monkeypatch)
+    item = build_text_creation_from_plain(
+        "hello",
+        prompt="create an image of a mockingbird",
+        title="create an image of a mockingbird",
+    )
+    item["id"] = "doc_mock"
+    api.store.upsert(item)
+    res = api.rename_lineage_root("doc_mock", "My mockingbird")
+    assert res["ok"] is True
+    assert res["label"] == "My mockingbird"
+    loaded = next(c for c in api.store.load() if c["id"] == "doc_mock")
+    assert loaded["lineageLabel"] == "My mockingbird"
+    assert loaded["lineageLabelManual"] is True
+    monkeypatch.setattr(
+        "synthetic_text_extruder.embedding_filename.suggest_lineage_label",
+        lambda *_a, **_k: "Should not apply",
+    )
+    relabel = api.relabel_lineage_roots(["doc_mock"])
+    assert relabel["labels"]["doc_mock"] == "My mockingbird"
+    assert relabel["updated"] == 0
+
+
+def test_reveal_in_explorer_selects_library_file(tmp_path, monkeypatch):
+    api = _api_with_tmp_store(tmp_path, monkeypatch)
+    media = tmp_path / "media"
+    media.mkdir()
+    path = media / "bird.png"
+    path.write_bytes(b"png")
+    item = build_media_creation(
+        modality="image",
+        prompt="bird",
+        media_path="media/bird.png",
+        mime_type="image/png",
+        title="bird",
+        creation_id="doc_bird",
+    )
+    api.store.upsert(item)
+    captured: list[list[str]] = []
+
+    def fake_popen(cmd, *args, **kwargs):
+        captured.append(list(cmd))
+        return MagicMock()
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+    monkeypatch.setattr("sys.platform", "win32")
+    res = api.reveal_in_explorer("doc_bird")
+    assert res["ok"] is True
+    assert captured
+    assert captured[0][0] == "explorer"
+    assert captured[0][1].startswith("/select,")
+    assert "bird.png" in captured[0][1]
 
 
 def test_media_ancestor_ids_oldest_first_and_lineage_context():

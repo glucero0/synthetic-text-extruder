@@ -177,6 +177,9 @@ def test_settings_html_exposes_library_exports_and_lineage():
     assert 'id="lineage-viewer-pane"' in html
     assert 'id="lineage-pane-splitter"' in html
     assert 'id="lineage-node-menu"' in html
+    assert 'id="lineage-chain-menu"' in html
+    assert 'id="lineage-search"' in html
+    assert 'id="btn-lineage-open-viewer"' not in html
     assert "lineage.sqlite" in html
     assert "Library folder" in html
     assert "Exports folder" in html

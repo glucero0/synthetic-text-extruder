@@ -1598,6 +1598,10 @@ html[data-reading-surface="dark"] .studio-source-text-preview {
   font-weight: 400;
 }
 
+.studio-source-menu [role="menuitem"][hidden] {
+  display: none !important;
+}
+
 #win-form.has-studio-basis {
   min-width: min(720px, 100%);
 }
@@ -1939,9 +1943,15 @@ html[data-reading-surface="dark"] .studio-source-text-preview {
   margin: 0 0 8px;
 }
 
-.lineage-list-wrap > .field-row {
+.lineage-list-wrap > .field-row,
+.lineage-list-wrap > .field-row-stacked {
   flex-shrink: 0;
   margin: 0 0 8px;
+}
+
+.lineage-list-wrap > .field-row-stacked input[type="text"] {
+  width: 100%;
+  min-width: 0;
 }
 
 .lineage-list {
@@ -1967,9 +1977,39 @@ html[data-reading-surface="dark"] .studio-source-text-preview {
   margin: 0 0 4px;
   padding: 6px 8px;
   border: 0;
-  background: transparent;
-  color: inherit;
+  border-radius: 0;
+  background: var(--ui-window);
+  color: var(--ui-text);
+  box-shadow: none;
+  text-shadow: none;
+  filter: none;
+  min-height: 0;
   cursor: pointer;
+}
+
+#win-lineage .lineage-list-item:not(:disabled):hover,
+#win-lineage .lineage-list-item:not(:disabled):active,
+#win-lineage .lineage-list-item:focus {
+  box-shadow: none;
+  text-shadow: none;
+  filter: none;
+}
+
+.lineage-list-item:hover,
+#win-lineage .lineage-list-item:not(:disabled):hover {
+  background: color-mix(in srgb, var(--ui-accent) 22%, transparent);
+  color: var(--ui-text);
+}
+
+.lineage-list-item.active,
+#win-lineage .lineage-list-item.active {
+  background: color-mix(in srgb, var(--ui-accent) 12%, var(--ui-window));
+  color: var(--ui-text);
+}
+
+.lineage-list-item.active:hover,
+#win-lineage .lineage-list-item.active:not(:disabled):hover {
+  background: color-mix(in srgb, var(--ui-accent) 22%, transparent);
 }
 
 .lineage-list-item > span:first-child {
@@ -1977,11 +2017,6 @@ html[data-reading-surface="dark"] .studio-source-text-preview {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.lineage-list-item.active {
-  background: var(--ui-text);
-  color: var(--ui-window);
 }
 
 .lineage-list-item .lineage-item-meta {
@@ -2134,6 +2169,11 @@ html[data-reading-surface="dark"] .studio-source-text-preview {
 .lineage-node.active .lineage-node-box {
   stroke: var(--ui-text);
   stroke-width: 2.5;
+}
+
+.lineage-node.match .lineage-node-box {
+  stroke: var(--ui-accent);
+  stroke-width: 2.25;
 }
 
 .lineage-node.missing .lineage-node-box {
@@ -2453,6 +2493,14 @@ html[data-reading-surface="dark"] .studio-source-text-preview {
   font-size: 12px;
   line-height: 1.4;
   white-space: pre-wrap;
+}
+
+#confirm-input-wrap {
+  margin: 0 0 12px;
+}
+
+#confirm-input-wrap[hidden] {
+  display: none !important;
 }
 
 .confirm-actions {

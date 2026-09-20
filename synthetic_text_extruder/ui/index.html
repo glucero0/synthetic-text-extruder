@@ -300,15 +300,10 @@
       <div class="window app-window" id="win-lineage" data-window="lineage" hidden>
         <div class="window-body lineage-body">
           <aside class="lineage-list-wrap">
-            <p class="hint">
-              Each chain is a viewer: original media, then the prompt, then
-              what CREATE (or split / splice / duplicate) produced. Click a
-              node to open it in the pane on the right. Right-click any node
-              and choose <strong>Use as Basis</strong> to add it to Creation
-              Studio with ancestor media from that chain — the next CREATE
-              branches from that node. Imports and
-              older Archive items with no recorded prompt stay hidden.
-            </p>
+            <div class="field-row-stacked">
+              <label for="lineage-search">Search</label>
+              <input id="lineage-search" type="text" />
+            </div>
             <div class="field-row">
               <input type="checkbox" id="lineage-show-orphans" />
               <label for="lineage-show-orphans">Show orphans</label>
@@ -333,7 +328,6 @@
                 <h2 id="lineage-viewer-title">Select a node</h2>
                 <p class="lineage-viewer-meta" id="lineage-viewer-meta"></p>
               </div>
-              <button type="button" id="btn-lineage-open-viewer" hidden>Open in Viewer</button>
             </header>
             <div class="lineage-viewer-body" id="lineage-viewer-body">
               <p class="muted">
@@ -1044,6 +1038,10 @@
         </div>
         <div class="window-body">
           <p id="confirm-message"></p>
+          <div class="field-row-stacked" id="confirm-input-wrap" hidden>
+            <label for="confirm-input" id="confirm-input-label">Name</label>
+            <input id="confirm-input" type="text" />
+          </div>
           <div class="form-actions confirm-actions">
             <button type="button" id="confirm-yes" class="default">Yes</button>
             <button type="button" id="confirm-no">No</button>
@@ -1141,6 +1139,35 @@
         <button type="button" role="menuitem" data-action="use-basis">
           Use as Basis
         </button>
+        <button type="button" role="menuitem" data-action="open-viewer">
+          Open in Viewer
+        </button>
+        <button type="button" role="menuitem" data-action="export">
+          Export
+        </button>
+        <button type="button" role="menuitem" data-action="show-explorer">
+          Show in Explorer
+        </button>
+        <button type="button" role="menuitem" data-action="edit">
+          Edit
+        </button>
+        <button type="button" role="menuitem" data-action="delete">
+          Delete
+        </button>
+      </div>
+      <div
+        id="lineage-chain-menu"
+        class="studio-source-menu"
+        hidden
+        role="menu"
+        aria-label="Lineage chain actions"
+      >
+        <button type="button" role="menuitem" data-action="rename">
+          Rename
+        </button>
+        <button type="button" role="menuitem" data-action="delete">
+          Delete
+        </button>
       </div>
   </div>
 
@@ -1148,6 +1175,6 @@
   <script src="vendor/jspdf.umd.min.js"></script>
   <script src="catalog.js"></script>
   <script src="image_edit.js"></script>
-  <script src="app.js?v=modern26"></script>
+  <script src="app.js?v=modern27"></script>
 </body>
 </html>

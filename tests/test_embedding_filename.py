@@ -5,6 +5,7 @@ from __future__ import annotations
 from synthetic_text_extruder.embedding_filename import (
     candidate_phrases,
     humanize_lineage_label,
+    lineage_chain_needs_name,
     name_from_phrases,
     slugify_filename,
     suggest_filename_for_creation,
@@ -209,10 +210,81 @@ def test_suggest_lineage_label_keeps_meaningful_title():
         raise AssertionError("should not embed a readable chain title")
 
     label = suggest_lineage_label(
-        {"title": "write a sentence about love", "prompt": "write a sentence about love"},
+        {
+            "title": "Harbor dusk",
+            "prompt": "create an image of a mockingbird",
+        },
         propose_fn=boom,
     )
-    assert label == "Write a sentence about love"
+    assert label == "Harbor dusk"
+
+
+def test_suggest_lineage_label_embeds_prompt_dump_title():
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
+
+    def propose(**_kwargs):
+        return ["mockingbird on a fence", "studio lighting setup"]
+
+    label = suggest_lineage_label(
+        {
+            "title": "create an image of a mockingbird",
+            "prompt": "create an image of a mockingbird",
+            "modality": "image",
+            "mimeType": "image/png",
+        },
+        api_key="unused",
+        content={"modality": "image", "bytes": png, "mime": "image/png", "text": ""},
+        propose_fn=propose,
+        embed_media_fn=lambda **_k: [1.0, 0.0],
+        embed_texts_fn=lambda texts: (
+            [[0.99, 0.0] if "mockingbird" in str(t).lower() else [0.1, 0.9] for t in texts]
+        ),
+    )
+    assert "Mockingbird" in label
+
+
+def test_lineage_chain_needs_name_only_when_unlabeled():
+    assert lineage_chain_needs_name(
+        {
+            "title": "create an image of a mockingbird",
+            "prompt": "create an image of a mockingbird",
+        }
+    )
+    assert lineage_chain_needs_name(
+        {
+            "title": "Harbor dusk",
+            "prompt": "create an image of a mockingbird",
+        }
+    )
+    assert not lineage_chain_needs_name(
+        {
+            "title": "create an image of a mockingbird",
+            "prompt": "create an image of a mockingbird",
+            "lineageLabel": "Mockingbird on a fence",
+        }
+    )
+    assert not lineage_chain_needs_name(
+        {
+            "title": "create an image of a mockingbird",
+            "prompt": "create an image of a mockingbird",
+            "lineageLabel": "create an image of a mockingbird",
+        }
+    )
+
+
+def test_suggest_lineage_label_keeps_stored_label():
+    def boom(**_kwargs):
+        raise AssertionError("already named chains must not call embeddings")
+
+    label = suggest_lineage_label(
+        {
+            "lineageLabel": "create an image of a mockingbird",
+            "title": "create an image of a mockingbird",
+            "prompt": "create an image of a mockingbird",
+        },
+        propose_fn=boom,
+    )
+    assert label == "create an image of a mockingbird"
 
 
 def test_suggest_lineage_label_uses_media_embedding_for_uuid_title():

@@ -533,7 +533,50 @@ class Api:
         return self.store.upsert(creation)
 
     def delete_creation(self, creation_id: str) -> list[dict[str, Any]]:
-        return self.store.delete(creation_id)
+        remaining = self.store.delete(creation_id)
+        try:
+            self._lineage_db().delete_for_child_ids([creation_id])
+        except OSError:
+            logger.exception("Could not delete lineage prompt steps")
+        return remaining
+
+    def _delete_creation_media_file(self, creation: dict[str, Any] | None) -> None:
+        from .media_store import media_dir, resolve_media_path
+
+        path = resolve_media_path((creation or {}).get("mediaPath"), config=self.config)
+        if path is None or not path.is_file():
+            return
+        try:
+            root = media_dir(self.config).resolve()
+            path.resolve().relative_to(root)
+        except (OSError, ValueError):
+            return
+        try:
+            path.unlink()
+        except OSError:
+            logger.debug("Could not delete library file", exc_info=True)
+
+    def _delete_creation_ids(self, ids: list[str]) -> list[dict[str, Any]]:
+        wanted = {str(item or "").strip() for item in ids if str(item or "").strip()}
+        if not wanted:
+            return self.store.load()
+        items = self.store.load()
+        keep: list[dict[str, Any]] = []
+        removed: list[dict[str, Any]] = []
+        for item in items:
+            cid = str(item.get("id") or "")
+            if cid in wanted:
+                removed.append(item)
+            else:
+                keep.append(item)
+        self.store.save(keep)
+        for item in removed:
+            self._delete_creation_media_file(item)
+        try:
+            self._lineage_db().delete_for_child_ids(list(wanted))
+        except OSError:
+            logger.exception("Could not delete lineage prompt steps")
+        return keep
 
     def import_creations(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return self.store.import_items(items)
@@ -755,9 +798,11 @@ class Api:
     def relabel_lineage_roots(
         self, root_ids: list[str] | None = None, limit: int = 8
     ) -> dict[str, Any]:
-        """Assign short unique names to chains whose Archive titles are filenames or UUIDs."""
+        """Assign a Lineage list name once. Later visits do not rename the chain."""
         from .embedding_filename import (
+            lineage_chain_needs_name,
             suggest_lineage_label,
+            title_is_prompt_dump,
             title_is_weak_lineage_name,
             uniquify_lineage_label,
         )
@@ -780,7 +825,7 @@ class Api:
         for component in components:
             root = by_id.get(str(component.get("rootId") or "")) or {}
             title = display_root_title(root, str(component.get("rootId") or ""))
-            if title and not title_is_weak_lineage_name(title):
+            if title and not lineage_chain_needs_name(root):
                 taken.append(title)
         api_key = resolve_gemini_key(self.config)
         labels: dict[str, str] = {}
@@ -793,14 +838,26 @@ class Api:
                 continue
             root = dict(by_id[rid])
             current = display_root_title(root, rid)
-            if current and not title_is_weak_lineage_name(current):
-                labels[rid] = current
+            if not lineage_chain_needs_name(root):
+                if current:
+                    labels[rid] = current
                 continue
             if changed >= cap:
                 continue
             others = [t for t in taken if t.casefold() != current.casefold()]
+            source = dict(root)
+            media_source = None
+            for node in component.get("nodes") or []:
+                nid = str((node or {}).get("id") or "").strip()
+                other = by_id.get(nid)
+                if other and other.get("mediaPath"):
+                    media_source = other
+            if media_source:
+                source = dict(media_source)
+                source.pop("lineageLabel", None)
+                source.pop("lineageLabelManual", None)
             label = suggest_lineage_label(
-                root,
+                source,
                 taken=others,
                 api_key=api_key,
                 config=self.config,
@@ -812,11 +869,16 @@ class Api:
                         continue
                     other = by_id.get(nid) or {}
                     alt = str(other.get("title") or other.get("game") or "").strip()
-                    if alt and not title_is_weak_lineage_name(alt):
+                    alt_prompt = str(other.get("prompt") or "")
+                    if (
+                        alt
+                        and not title_is_weak_lineage_name(alt)
+                        and not title_is_prompt_dump(alt, alt_prompt)
+                    ):
                         label = uniquify_lineage_label(alt, others)
                         break
-            if not label or title_is_weak_lineage_name(label):
-                continue
+            if not label:
+                label = uniquify_lineage_label(current or "Lineage", others)
             if str(root.get("lineageLabel") or "") != label:
                 root["lineageLabel"] = label
                 saved = self.store.upsert(root)
@@ -825,6 +887,98 @@ class Api:
             labels[rid] = label
             taken.append(label)
         return {"ok": True, "labels": labels, "updated": changed}
+
+    def delete_lineage_branch(self, node_id: str = "") -> dict[str, Any]:
+        """Delete a node and every descendant creation in that branch."""
+        from .lineage import descendant_creation_ids
+
+        nid = str(node_id or "").strip()
+        if not nid:
+            return {"ok": False, "error": "No node selected."}
+        ids = descendant_creation_ids(self.store.load(), nid)
+        if not ids:
+            return {"ok": False, "error": "Nothing to delete."}
+        remaining = self._delete_creation_ids(ids)
+        return {"ok": True, "deleted": ids, "creations": remaining}
+
+    def delete_lineage_chain(self, root_id: str = "") -> dict[str, Any]:
+        """Delete every creation in a Lineage list chain."""
+        from .lineage import chain_creation_ids
+
+        rid = str(root_id or "").strip()
+        if not rid:
+            return {"ok": False, "error": "No chain selected."}
+        ids = chain_creation_ids(self.store.load(), rid)
+        if not ids:
+            return {"ok": False, "error": "Nothing to delete."}
+        remaining = self._delete_creation_ids(ids)
+        return {"ok": True, "deleted": ids, "creations": remaining}
+
+    def rename_lineage_root(self, root_id: str = "", label: str = "") -> dict[str, Any]:
+        """Persist a user-chosen chain name. Auto-naming will not run again."""
+        from .embedding_filename import humanize_lineage_label, uniquify_lineage_label
+        from .lineage import connected_components, display_root_title
+
+        rid = str(root_id or "").strip()
+        name = humanize_lineage_label(label)
+        if not rid:
+            return {"ok": False, "error": "No chain selected."}
+        if not name:
+            return {"ok": False, "error": "Enter a name."}
+        items = self.store.load()
+        by_id = {str(c.get("id") or ""): c for c in items if str(c.get("id") or "")}
+        if rid not in by_id:
+            return {"ok": False, "error": "Chain not found."}
+        taken: list[str] = []
+        for component in connected_components(items):
+            other_id = str(component.get("rootId") or "")
+            if not other_id or other_id == rid:
+                continue
+            other = by_id.get(other_id) or {}
+            title = display_root_title(other, other_id)
+            if title:
+                taken.append(title)
+        name = uniquify_lineage_label(name, taken)
+        root = dict(by_id[rid])
+        root["lineageLabel"] = name
+        root["lineageLabelManual"] = True
+        saved = self.store.upsert(root)
+        return {
+            "ok": True,
+            "label": name,
+            "creation": saved,
+            "creations": self.store.load(),
+        }
+
+    def reveal_in_explorer(self, creation_id: str = "") -> dict[str, Any]:
+        """Open the library file in the OS file manager, selected when possible."""
+        import subprocess
+        import sys
+
+        from .media_store import resolve_media_path
+
+        cid = str(creation_id or "").strip()
+        if not cid:
+            return {"ok": False, "error": "No item selected."}
+        item = next(
+            (c for c in self.store.load() if str(c.get("id") or "") == cid), None
+        )
+        if not item:
+            return {"ok": False, "error": "Item not found."}
+        path = resolve_media_path(item.get("mediaPath"), config=self.config)
+        if path is None or not path.is_file():
+            return {"ok": False, "error": "No file on disk for this item."}
+        target = str(path.resolve())
+        try:
+            if sys.platform == "win32":
+                subprocess.Popen(["explorer", f"/select,{target}"])
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", "-R", target])
+            else:
+                subprocess.Popen(["xdg-open", str(path.parent)])
+        except OSError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "path": target}
 
     def lineage_inspect(self, node_id: str = "") -> dict[str, Any]:
         """Full prompt text or generated media for one Lineage graph node."""
