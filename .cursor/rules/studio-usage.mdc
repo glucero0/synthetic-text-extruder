@@ -1,0 +1,22 @@
+---
+description: Studio CREATE usage lives in the router policy prompt; do not silently regress report-vs-video or other job routing.
+alwaysApply: true
+---
+
+# Studio usage contract
+
+Product routing for Creation Studio lives in [`synthetic_text_extruder/prompts/studio_router.md`](synthetic_text_extruder/prompts/studio_router.md) plus fixtures in `studio_router.fixtures.json`. Tests in `tests/test_studio_router.py` lock it. Regex in `modality.py` / `studio_sources.py` is **fallback only** when the classifier fails.
+
+## Do
+
+- If a new CREATE behavior is requested, update the policy prompt **and** add a fixture, then keep README / Studio mission copy in sync.
+- Keep Settings `extra_instructions` off the router prompt (style only; must not choose Veo vs a PDF report).
+- Dispatch in `generator.py` from the classified job kind (report, extract, collection, video, image, audio, text).
+
+## Do not
+
+- Do not add a competing regex “fix” that makes incidental words like “video” beat **create a report** / **summarize**.
+- Do not send the usage policy through Veo, Imagen, or Lyria — those APIs cannot decide to write a report.
+- Do not silently drop an invariant when a later chat asks for something that conflicts. Follow `.cursor/rules/always-ask-before-overriding.mdc`: say what would break, and wait for an explicit yes.
+
+Example that must stay `job: report` (Export PDF, not Save MP4): `create a report, include a summary of the video, "clip.mp4"`.

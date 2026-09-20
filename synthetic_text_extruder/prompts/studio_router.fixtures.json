@@ -1,0 +1,165 @@
+{
+  "fixtures": [
+    {
+      "id": "report-over-video-mentions",
+      "prompt": "create a report, include a summary of the video, \"doc_1c9b1302da.mp4\", the image, \"doc_7b759c704e.jpg\", and the story from \"a_very_short_story_of_a_dog_being_rescued_by_a_family_of_thr.txt\"",
+      "sources": [
+        {"id": "doc_img", "modality": "image", "title": "Harbor", "filename": "doc_7b759c704e.jpg"},
+        {"id": "doc_pdf", "modality": "pdf", "title": "Notes", "filename": "notes.pdf"},
+        {"id": "doc_1c9b1302da", "modality": "video", "title": "clip", "filename": "doc_1c9b1302da.mp4"}
+      ],
+      "expected": {"job": "report", "modality": "text"}
+    },
+    {
+      "id": "summarize-is-report",
+      "prompt": "summarize",
+      "sources": [
+        {"id": "v", "modality": "video", "title": "Harbor clip", "filename": "harbor.mp4"}
+      ],
+      "expected": {"job": "report", "modality": "text"}
+    },
+    {
+      "id": "two-sources-empty-prompt",
+      "prompt": "",
+      "sources": [
+        {"id": "a", "modality": "image", "title": "Harbor"},
+        {"id": "b", "modality": "pdf", "title": "Notes"}
+      ],
+      "expected": {"job": "report", "modality": "text"}
+    },
+    {
+      "id": "write-a-report",
+      "prompt": "write a report",
+      "sources": [
+        {"id": "a", "modality": "image", "title": "Harbor"},
+        {"id": "b", "modality": "pdf", "title": "Notes"}
+      ],
+      "expected": {"job": "report", "modality": "text"}
+    },
+    {
+      "id": "generate-video-not-report",
+      "prompt": "generate a video of the harbor",
+      "sources": [
+        {"id": "a", "modality": "image", "title": "Harbor"},
+        {"id": "b", "modality": "pdf", "title": "Notes"}
+      ],
+      "expected": {"job": "video", "modality": "video"}
+    },
+    {
+      "id": "create-image-not-report",
+      "prompt": "create an image of both",
+      "sources": [
+        {"id": "a", "modality": "image", "title": "Harbor"},
+        {"id": "b", "modality": "pdf", "title": "Notes"}
+      ],
+      "expected": {"job": "image", "modality": "image"}
+    },
+    {
+      "id": "summarize-into-video",
+      "prompt": "summarize this into a video",
+      "sources": [
+        {"id": "v", "modality": "video", "title": "clip"}
+      ],
+      "expected": {"job": "video", "modality": "video"},
+      "fallback": {"job": "text", "modality": "text"}
+    },
+    {
+      "id": "create-video-summarizing",
+      "prompt": "create a video summarizing the clips",
+      "sources": [
+        {"id": "v", "modality": "video", "title": "clip"}
+      ],
+      "expected": {"job": "video", "modality": "video"}
+    },
+    {
+      "id": "bare-generate-video",
+      "prompt": "generate a video of the harbor",
+      "sources": [],
+      "expected": {"job": "video", "modality": "video"}
+    },
+    {
+      "id": "extract-text-not-report",
+      "prompt": "extract the text",
+      "sources": [
+        {"id": "a", "modality": "image", "title": "Shot"}
+      ],
+      "expected": {"job": "text_extract", "modality": "text"}
+    },
+    {
+      "id": "extract-layout",
+      "prompt": "extract the layout",
+      "sources": [
+        {"id": "a", "modality": "image", "title": "Dialog"}
+      ],
+      "expected": {"job": "layout_extract", "modality": "text"}
+    },
+    {
+      "id": "transcribe-clip",
+      "prompt": "transcribe this clip",
+      "sources": [
+        {"id": "a", "modality": "video", "title": "Talk"}
+      ],
+      "expected": {"job": "text_extract", "modality": "text"}
+    },
+    {
+      "id": "named-extract-among-many",
+      "prompt": "extract the text from the image \"a toaster on fire\"",
+      "sources": [
+        {"id": "toaster", "modality": "image", "title": "a toaster on fire", "filename": "toaster.png"},
+        {"id": "notes", "modality": "text", "title": "Notes"}
+      ],
+      "expected": {"job": "text_extract", "modality": "text"}
+    },
+    {
+      "id": "collection-ocr",
+      "prompt": "OCR every scan",
+      "sources": [
+        {"id": "col", "modality": "text", "title": "Scans (1 file)", "isCollection": true}
+      ],
+      "expected": {"job": "collection", "collectionKind": "ocr", "modality": "text"}
+    },
+    {
+      "id": "collection-write-report",
+      "prompt": "write a report",
+      "sources": [
+        {"id": "col", "modality": "text", "title": "Scans (2 files)", "isCollection": true}
+      ],
+      "expected": {"job": "collection", "collectionKind": "report", "modality": "text"}
+    },
+    {
+      "id": "tray-report-not-collection",
+      "prompt": "write a report",
+      "sources": [
+        {"id": "a", "modality": "image", "title": "Harbor"},
+        {"id": "n", "modality": "text", "title": "Notes"}
+      ],
+      "expected": {"job": "report", "modality": "text"}
+    },
+    {
+      "id": "lineage-ancestors-modify-stays-image",
+      "prompt": "modify so man has white skin, a dirty deformed face",
+      "sources": [
+        {"id": "doc_orig", "modality": "image", "title": "alley"},
+        {
+          "id": "doc_edit",
+          "modality": "image",
+          "title": "white skin",
+          "derivedFrom": [{"id": "doc_orig", "role": "basis"}]
+        }
+      ],
+      "expected": {"job": "image", "modality": "image"}
+    },
+    {
+      "id": "compose-song",
+      "prompt": "Compose a chiptune song for a Sega Genesis title screen",
+      "sources": [],
+      "expected": {"job": "audio", "modality": "audio"}
+    },
+    {
+      "id": "freeform-text",
+      "prompt": "Write a short poem about autumn",
+      "sources": [],
+      "expected": {"job": "text", "modality": "text"}
+    }
+  ]
+}

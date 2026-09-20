@@ -27,8 +27,10 @@ Thumbs.db
 config.yaml
 config.local.yaml
 archives.json
+lineage.sqlite
 prompts.json
 media/
+exports/
 .synthetic-text-extruder/
 .retro-98-ai-creator/
 

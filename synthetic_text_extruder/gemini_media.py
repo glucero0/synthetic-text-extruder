@@ -89,25 +89,52 @@ def generate_image_with_gemini(
     mime_type = "image/png"
     basis_bytes = (basis_media or {}).get("bytes") if basis_media else None
     basis_mime = str((basis_media or {}).get("mime_type") or "image/png")
+    reference_parts: list[tuple[bytes, str]] = []
+    raw_refs = (basis_media or {}).get("reference_media") if basis_media else None
+    if isinstance(raw_refs, list):
+        for item in raw_refs:
+            if not isinstance(item, dict):
+                continue
+            data = item.get("bytes")
+            if not data:
+                continue
+            mime = str(item.get("mime_type") or "image/png")
+            reference_parts.append((bytes(data), mime))
 
     try:
         if "imagen" not in model_name.lower():
+            has_refs = bool(basis_bytes or reference_parts)
             _emit(
                 progress,
-                "Generating image from basis…" if basis_bytes else "Generating image…",
+                "Generating image from basis…" if has_refs else "Generating image…",
                 percent=40,
                 title="Generating image",
             )
             contents: list[Any]
-            if basis_bytes:
-                edit_prompt = (
-                    "Using the provided reference image as the basis, create a new image. "
-                    "Follow this instruction:\n" + prompt
-                )
+            if has_refs:
+                if reference_parts and basis_bytes:
+                    edit_prompt = (
+                        "Using the provided reference images as lineage context. "
+                        "The last image is the current basis to edit; earlier images "
+                        "are ancestors from the same chain. Create a new image. "
+                        "Follow this instruction:\n" + prompt
+                    )
+                else:
+                    edit_prompt = (
+                        "Using the provided reference image as the basis, create a new image. "
+                        "Follow this instruction:\n" + prompt
+                    )
                 contents = [
-                    types.Part.from_bytes(data=bytes(basis_bytes), mime_type=basis_mime),
-                    edit_prompt,
+                    types.Part.from_bytes(data=data, mime_type=mime)
+                    for data, mime in reference_parts
                 ]
+                if basis_bytes:
+                    contents.append(
+                        types.Part.from_bytes(
+                            data=bytes(basis_bytes), mime_type=basis_mime
+                        )
+                    )
+                contents.append(edit_prompt)
             else:
                 contents = [prompt]
             response = run_cancellable(
@@ -137,7 +164,7 @@ def generate_image_with_gemini(
                 if image_bytes:
                     break
         else:
-            if basis_bytes:
+            if basis_bytes or reference_parts:
                 raise RuntimeError(
                     "Imagen models in this app do not accept a Studio media basis. "
                     "Switch the Gemini Image model to a Flash Image model, or Clear basis."

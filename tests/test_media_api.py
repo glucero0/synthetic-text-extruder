@@ -16,7 +16,7 @@ from synthetic_text_extruder.storage import ArchiveStore
 def _api_with_tmp_store(tmp_path, monkeypatch) -> Api:
     api = Api()
     api.config = {
-        "paths": {"archives": str(tmp_path / "archives.json"), "media": "media"},
+        "paths": {"archives": str(tmp_path / "archives.json"), "media": "media", "exports": "exports"},
     }
     api.store = ArchiveStore(path=tmp_path / "archives.json")
     monkeypatch.setattr(
@@ -146,6 +146,8 @@ def test_export_edited_video_save_dialog(tmp_path, monkeypatch):
     assert res["ok"] is True
     assert Path(res["path"]) == dest
     assert dest.read_bytes() == b"export-bytes"
+    kwargs = win.create_file_dialog.call_args.kwargs
+    assert Path(str(kwargs["directory"])).resolve() == (tmp_path / "exports").resolve()
 
 
 def test_export_edited_video_cancelled(tmp_path, monkeypatch):
@@ -347,6 +349,39 @@ def test_get_media_payload_image_includes_file_url(tmp_path, monkeypatch):
     assert str(res.get("dataUrl") or "").startswith("data:image/")
 
 
+def test_save_dialog_kwargs_always_use_configured_exports(tmp_path, monkeypatch):
+    api = _api_with_tmp_store(tmp_path, monkeypatch)
+    custom = tmp_path / "my-exports"
+    api.config["paths"]["exports"] = str(custom.resolve())
+    kwargs = api._save_dialog_kwargs("shot.png", ("PNG (*.png)",))
+    assert "directory" in kwargs
+    assert Path(str(kwargs["directory"])).resolve() == custom.resolve()
+    assert custom.is_dir()
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    seen: list[dict[str, object]] = []
+
+    class _Win:
+        def create_file_dialog(self, *_args, **kw):
+            seen.append(dict(kw))
+            return str(other / f"picked-{len(seen)}.txt")
+
+    api._window = _Win()
+    first = api.save_file_dialog("a.txt", "one")
+    second = api.save_file_dialog("b.txt", "two")
+    assert first["ok"] is True
+    assert second["ok"] is True
+    assert Path(first["path"]).parent == other.resolve()
+    assert len(seen) == 2
+    for kwargs in seen:
+        assert Path(str(kwargs["directory"])).resolve() == custom.resolve()
+
+    png_b64 = base64.b64encode(b"\x89PNG\r\n").decode("ascii")
+    binary = api.save_binary_file_dialog("poster.png", png_b64)
+    assert binary["ok"] is True
+    assert Path(str(seen[-1]["directory"])).resolve() == custom.resolve()
+
+
 def test_save_binary_file_dialog_forces_png_and_pdf_extension(tmp_path, monkeypatch):
     api = _api_with_tmp_store(tmp_path, monkeypatch)
     png_bytes = b"\x89PNG\r\n\x1a\n"
@@ -457,6 +492,9 @@ def test_export_creation_media_forces_mp3_extension(tmp_path, monkeypatch):
     assert str(captured.get("save_filename") or "").endswith(".mp3")
     types = captured.get("file_types") or ()
     assert any("*.mp3" in str(item) for item in types)
+    assert Path(str(captured.get("directory") or "")).resolve() == (
+        tmp_path / "exports"
+    ).resolve()
 
 
 def test_export_creation_media_uses_embedding_filename(tmp_path, monkeypatch):

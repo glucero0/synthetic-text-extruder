@@ -108,6 +108,7 @@ def test_expand_collection_members_uses_snapshots():
     col = build_collection_creation(members, folder_name="Scans")
     assert is_collection_creation(col)
     assert col["meta"]["collection"]["count"] == 2
+    assert {e["id"] for e in col.get("derivedFrom") or []} == {"doc_a", "doc_b"}
     expanded = expand_collection_members([col])
     assert [c["id"] for c in expanded] == ["doc_a", "doc_b"]
 

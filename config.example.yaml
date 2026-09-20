@@ -19,7 +19,8 @@ gemini:
   temperature: 0.0
 
 prompt:
-  # Control Panel → Extra system instructions (appended to generation prompts)
+  # Control Panel → Extra system instructions (appended to generation prompts).
+  # Does not choose report vs video vs extract — that is the Studio policy classifier.
   extra_instructions: ""
 
 ui:
@@ -33,12 +34,16 @@ ui:
   window_width: 1280
   window_height: 800
   studio_basis_width: 280  # Creation Studio Media basis pane width (px)
+  lineage_pane_width: 360  # Lineage right-hand viewer pane width (px)
   title: "Synthetic Text Extruder"
 
 paths:
   archives: archives.json
-  # Relative "media" is the project media/ folder. Control Panel can set an absolute folder.
+  # Relative "media" is the project library folder. Control Panel can set an absolute folder.
   media: media
+  # Default Save As folder. Dialogs always open here (not the last-used folder).
+  # GENERATE does not write here.
+  exports: exports
   prompts: prompts.json
 
 google_workspace:

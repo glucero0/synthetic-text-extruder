@@ -53,7 +53,8 @@ DEFAULTS: dict[str, Any] = {
         "retired_model_aliases": {},
     },
     "prompt": {
-        # Appended to generation prompts (Control Panel → Extra system instructions)
+        # Appended to generation prompts (Control Panel → Extra system instructions).
+        # Not used by the Studio job classifier (report vs video vs extract).
         "extra_instructions": "",
     },
     "ui": {
@@ -74,12 +75,14 @@ DEFAULTS: dict[str, Any] = {
         "window_width": 1280,
         "window_height": 800,
         "studio_basis_width": 280,
+        "lineage_pane_width": 360,
         "title": "Synthetic Text Extruder",
     },
     "paths": {
         # Relative paths resolve against the project root
         "archives": "archives.json",
         "media": "media",
+        "exports": "exports",
         "prompts": "prompts.json",
     },
     "google_workspace": {
@@ -93,6 +96,9 @@ DEFAULTS: dict[str, Any] = {
 STUDIO_BASIS_WIDTH_MIN = 160
 STUDIO_BASIS_WIDTH_MAX = 1200
 STUDIO_BASIS_WIDTH_DEFAULT = 280
+LINEAGE_PANE_WIDTH_MIN = 220
+LINEAGE_PANE_WIDTH_MAX = 900
+LINEAGE_PANE_WIDTH_DEFAULT = 360
 UI_FONT_SIZE_MIN = 11
 UI_FONT_SIZE_MAX = 22
 UI_FONT_SIZE_DEFAULT = 13
@@ -196,12 +202,16 @@ def load_config() -> dict[str, Any]:
     if not paths.get("archives"):
         paths["archives"] = DEFAULTS["paths"]["archives"]
     paths["media"] = normalize_media_folder(paths.get("media"))
+    paths["exports"] = normalize_exports_folder(paths.get("exports"))
     if not paths.get("prompts"):
         paths["prompts"] = DEFAULTS["paths"]["prompts"]
     ui = cfg.setdefault("ui", {})
     if isinstance(ui, dict):
         ui["studio_basis_width"] = normalize_studio_basis_width(
             ui.get("studio_basis_width")
+        )
+        ui["lineage_pane_width"] = normalize_lineage_pane_width(
+            ui.get("lineage_pane_width")
         )
         ui["ui_font_size"] = normalize_ui_font_size(ui.get("ui_font_size"))
     return cfg
@@ -267,10 +277,15 @@ def save_config(updates: dict[str, Any], existing: dict[str, Any] | None = None)
     _coerce_gemini_backend(merged)
     paths = merged.setdefault("paths", {})
     paths.pop("media_resolved", None)
+    paths.pop("exports_resolved", None)
     paths["media"] = normalize_media_folder(paths.get("media"))
+    paths["exports"] = normalize_exports_folder(paths.get("exports"))
     ui_out = dict(merged.get("ui") or {})
     ui_out["studio_basis_width"] = normalize_studio_basis_width(
         ui_out.get("studio_basis_width")
+    )
+    ui_out["lineage_pane_width"] = normalize_lineage_pane_width(
+        ui_out.get("lineage_pane_width")
     )
     ui_out["ui_font_size"] = normalize_ui_font_size(ui_out.get("ui_font_size"))
 
@@ -288,6 +303,7 @@ def save_config(updates: dict[str, Any], existing: dict[str, Any] | None = None)
         "paths": {
             "archives": paths.get("archives") or DEFAULTS["paths"]["archives"],
             "media": paths.get("media") or DEFAULTS["paths"]["media"],
+            "exports": paths.get("exports") or DEFAULTS["paths"]["exports"],
             "prompts": paths.get("prompts") or DEFAULTS["paths"]["prompts"],
         },
     }
@@ -323,9 +339,18 @@ def normalize_studio_basis_width(raw: Any) -> int:
     return max(STUDIO_BASIS_WIDTH_MIN, min(STUDIO_BASIS_WIDTH_MAX, value))
 
 
-def normalize_media_folder(raw: str | None) -> str:
-    """Return a portable default (`media`) or an absolute folder path."""
-    text = str(raw or "").strip() or DEFAULTS["paths"]["media"]
+def normalize_lineage_pane_width(raw: Any) -> int:
+    """Clamp Lineage viewer pane width (px) for config I/O."""
+    try:
+        value = int(round(float(raw)))
+    except (TypeError, ValueError):
+        return LINEAGE_PANE_WIDTH_DEFAULT
+    return max(LINEAGE_PANE_WIDTH_MIN, min(LINEAGE_PANE_WIDTH_MAX, value))
+
+
+def _normalize_project_folder(raw: str | None, default: str) -> str:
+    """Return a portable default folder name or an absolute folder path."""
+    text = str(raw or "").strip() or default
     path = Path(text).expanduser()
     if not path.is_absolute():
         path = PROJECT_ROOT / path
@@ -333,10 +358,20 @@ def normalize_media_folder(raw: str | None) -> str:
         resolved = path.resolve()
     except OSError:
         return text
-    default = (PROJECT_ROOT / DEFAULTS["paths"]["media"]).resolve()
-    if resolved == default:
-        return DEFAULTS["paths"]["media"]
+    default_resolved = (PROJECT_ROOT / default).resolve()
+    if resolved == default_resolved:
+        return default
     return str(resolved)
+
+
+def normalize_media_folder(raw: str | None) -> str:
+    """Return a portable default (`media`) or an absolute folder path."""
+    return _normalize_project_folder(raw, DEFAULTS["paths"]["media"])
+
+
+def normalize_exports_folder(raw: str | None) -> str:
+    """Return a portable default (`exports`) or an absolute folder path."""
+    return _normalize_project_folder(raw, DEFAULTS["paths"]["exports"])
 
 
 def archives_path(cfg: dict[str, Any] | None = None) -> Path:
@@ -348,6 +383,13 @@ def media_path(cfg: dict[str, Any] | None = None) -> Path:
     cfg = cfg or load_config()
     return expand_path(
         normalize_media_folder((cfg.get("paths") or {}).get("media"))
+    )
+
+
+def exports_path(cfg: dict[str, Any] | None = None) -> Path:
+    cfg = cfg or load_config()
+    return expand_path(
+        normalize_exports_folder((cfg.get("paths") or {}).get("exports"))
     )
 
 

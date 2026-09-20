@@ -25,6 +25,9 @@ def test_duplicate_text_creation(tmp_path):
     assert "(copy)" in copy["title"]
     assert copy["modality"] == "text"
     assert "Hello body" in (copy["sections"][0]["content"] or "")
+    roles = {e["role"] for e in copy.get("derivedFrom") or []}
+    assert "duplicate" in roles
+    assert "prompt" in roles
 
 
 def test_build_media_import_shape():

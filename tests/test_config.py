@@ -13,7 +13,9 @@ from synthetic_text_extruder.config import (
     is_legacy_app_token_path,
     is_legacy_gmail_token_path,
     load_config,
+    normalize_exports_folder,
     normalize_google_workspace_cfg,
+    normalize_lineage_pane_width,
     normalize_media_folder,
     normalize_studio_basis_width,
     normalize_ui_font_size,
@@ -29,6 +31,7 @@ def test_default_backend_is_gemini():
     assert DEFAULTS["gemini"]["text_model"] == "gemini-2.5-flash"
     assert DEFAULTS["gemini"]["audio_model"] == "lyria-3-clip-preview"
     assert DEFAULTS["gemini"]["use_tools"] is False
+    assert DEFAULTS["paths"]["exports"] == "exports"
     assert "openrouter" not in DEFAULTS
     assert "huggingface" not in DEFAULTS
 
@@ -125,6 +128,13 @@ def test_normalize_media_folder_maps_project_media_to_portable():
     assert normalize_media_folder(str(PROJECT_ROOT / "media") + "/") == "media"
 
 
+def test_normalize_exports_folder_maps_project_exports_to_portable():
+    assert normalize_exports_folder(None) == "exports"
+    assert normalize_exports_folder("") == "exports"
+    assert normalize_exports_folder("exports") == "exports"
+    assert normalize_exports_folder(str(PROJECT_ROOT / "exports")) == "exports"
+
+
 def test_normalize_media_folder_keeps_other_absolute(tmp_path):
     other = (tmp_path / "custom-media").resolve()
     other.mkdir()
@@ -156,6 +166,22 @@ def test_settings_html_exposes_gemini_api_key_fields():
     assert 'id="btn-save-gemini-key-google"' in html
 
 
+def test_settings_html_exposes_library_exports_and_lineage():
+    html = (PROJECT_ROOT / "synthetic_text_extruder" / "ui" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    assert 'id="media-folder-path"' in html
+    assert 'id="exports-folder-path"' in html
+    assert 'id="win-lineage"' in html
+    assert 'id="btn-show-lineage"' in html
+    assert 'id="lineage-viewer-pane"' in html
+    assert 'id="lineage-pane-splitter"' in html
+    assert 'id="lineage-node-menu"' in html
+    assert "lineage.sqlite" in html
+    assert "Library folder" in html
+    assert "Exports folder" in html
+
+
 def test_save_config_persists_paths_media(tmp_path, monkeypatch):
     dest = tmp_path / "config.yaml"
     monkeypatch.setattr("synthetic_text_extruder.config.DEFAULT_CONFIG_PATH", dest)
@@ -178,6 +204,22 @@ def test_save_config_persists_paths_media(tmp_path, monkeypatch):
     written2 = yaml.safe_load(dest.read_text(encoding="utf-8"))
     assert out2["paths"]["media"] == "media"
     assert written2["paths"]["media"] == "media"
+
+
+def test_save_config_persists_paths_exports(tmp_path, monkeypatch):
+    dest = tmp_path / "config.yaml"
+    monkeypatch.setattr("synthetic_text_extruder.config.DEFAULT_CONFIG_PATH", dest)
+    custom = (tmp_path / "my-exports").resolve()
+    existing = copy.deepcopy(DEFAULTS)
+    out = save_config(
+        {"paths": {"exports": str(custom), "exports_resolved": "should-not-write"}},
+        existing=existing,
+    )
+    assert out["paths"]["exports"] == str(custom)
+    assert "exports_resolved" not in (out.get("paths") or {})
+    written = yaml.safe_load(dest.read_text(encoding="utf-8"))
+    assert written["paths"]["exports"] == str(custom)
+    assert "exports_resolved" not in (written.get("paths") or {})
 
 
 def test_extract_json_still_works():
@@ -234,12 +276,34 @@ def test_save_config_persists_studio_basis_width(tmp_path, monkeypatch):
     assert out2["ui"]["studio_basis_width"] == 160
 
 
+def test_normalize_lineage_pane_width():
+    assert normalize_lineage_pane_width(480) == 480
+    assert normalize_lineage_pane_width(50) == 220
+    assert normalize_lineage_pane_width(9999) == 900
+    assert normalize_lineage_pane_width("nope") == 360
+    assert normalize_lineage_pane_width(None) == 360
+
+
+def test_save_config_persists_lineage_pane_width(tmp_path, monkeypatch):
+    dest = tmp_path / "config.yaml"
+    monkeypatch.setattr("synthetic_text_extruder.config.DEFAULT_CONFIG_PATH", dest)
+    existing = copy.deepcopy(DEFAULTS)
+    out = save_config({"ui": {"lineage_pane_width": 480}}, existing=existing)
+    assert out["ui"]["lineage_pane_width"] == 480
+    written = yaml.safe_load(dest.read_text(encoding="utf-8"))
+    assert written["ui"]["lineage_pane_width"] == 480
+
+    out2 = save_config({"ui": {"lineage_pane_width": 12}}, existing=out)
+    assert out2["ui"]["lineage_pane_width"] == 220
+
+
 def test_ui_app_theme_defaults():
     ui = DEFAULTS["ui"]
     assert ui["app_theme"] == "light"
     assert ui["ui_font"] == "inter"
     assert ui["ui_font_size"] == 13
     assert ui["studio_basis_width"] == 280
+    assert ui["lineage_pane_width"] == 360
     custom = ui["custom_theme"]
     assert custom["desktop_color"] == "#008080"
     assert custom["window_color"] == "#c0c0c0"

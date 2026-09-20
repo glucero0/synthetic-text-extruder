@@ -43,6 +43,26 @@ _WORD_RE = re.compile(r"[A-Za-z0-9]+(?:'[A-Za-z]+)?")
 _TITLE_LINE_RE = re.compile(
     r"^\s*(?:\d+[\).:-]\s*|[-*•]\s*)?(?P<title>.+?)\s*$"
 )
+_UUID_RE = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+    re.IGNORECASE,
+)
+_HEX_BLOB_RE = re.compile(r"[0-9a-f]{10,}", re.IGNORECASE)
+_AI_GENERATED_RE = re.compile(
+    r"ai[_-]?generated|_preview_|generated_preview",
+    re.IGNORECASE,
+)
+_GENERIC_LINEAGE_TITLE_RE = re.compile(
+    r"^(untitled|creation|image|photo|photograph|picture|video|clip|"
+    r"audio|song|music|document|file|preview|screenshot|download|img|dsc|pxl|vid)"
+    r"(\s*\(\d+\))?$",
+    re.IGNORECASE,
+)
+_CAMERA_FILE_RE = re.compile(
+    r"^(IMG|DSC|PXL|VID|MOV|DSCN|SDC)[_-]?\d+$",
+    re.IGNORECASE,
+)
+LINEAGE_LABEL_MAX = 36
 
 # Function words that never make a useful filename by themselves.
 _STOPWORDS = frozenset(
@@ -196,6 +216,122 @@ def title_is_prompt_dump(title: str, prompt: str) -> bool:
     if compact_t and compact_p and compact_t[:36] == compact_p[:36]:
         return True
     return False
+
+
+def title_is_weak_lineage_name(title: str) -> bool:
+    """True when a Lineage list label is a filename, UUID, or generic 'image (1)'."""
+    t = str(title or "").strip()
+    if not t:
+        return True
+    if t.casefold() in {"untitled", "creation", "missing parent", "lineage"}:
+        return True
+    if _GENERIC_LINEAGE_TITLE_RE.fullmatch(t):
+        return True
+    if _UUID_RE.search(t) or _AI_GENERATED_RE.search(t):
+        return True
+    lowered = t.casefold()
+    if lowered.startswith("imported from "):
+        return True
+    if re.fullmatch(r"doc_[0-9a-f]{6,}", t, re.IGNORECASE):
+        return True
+    stem = t
+    ext_match = re.fullmatch(
+        r"(.+?)\.(png|jpe?g|gif|webp|bmp|mp4|mov|webm|mp3|wav|pdf|txt|md)$",
+        t,
+        re.IGNORECASE,
+    )
+    if ext_match:
+        stem = ext_match.group(1)
+        if _CAMERA_FILE_RE.fullmatch(stem.replace(" ", "_")):
+            return True
+        if _GENERIC_LINEAGE_TITLE_RE.fullmatch(stem.replace("_", " ")):
+            return True
+    hexes = _HEX_BLOB_RE.findall(t)
+    if hexes and sum(len(h) for h in hexes) >= 10:
+        words = [w for w in _WORD_RE.findall(t) if not _HEX_BLOB_RE.fullmatch(w)]
+        if len(words) <= 3:
+            return True
+    return False
+
+
+def humanize_lineage_label(text: str, *, max_len: int = LINEAGE_LABEL_MAX) -> str:
+    """Short display name: spaces, not a filesystem slug."""
+    raw = str(text or "").strip()
+    raw = raw.replace("_", " ")
+    if " " not in raw and "-" in raw:
+        raw = raw.replace("-", " ")
+    raw = " ".join(raw.split())
+    if len(raw) > max_len:
+        clipped = raw[:max_len].rsplit(" ", 1)[0].strip()
+        raw = clipped or raw[:max_len].strip()
+    if not raw:
+        return ""
+    return raw[0].upper() + raw[1:]
+
+
+def uniquify_lineage_label(label: str, taken: Sequence[str] | None) -> str:
+    """Keep labels distinct in the Lineage list (case-insensitive)."""
+    base = humanize_lineage_label(label) or "Lineage"
+    used = {str(item or "").strip().casefold() for item in (taken or []) if str(item or "").strip()}
+    candidate = base
+    n = 2
+    while candidate.casefold() in used:
+        suffix = f" ({n})"
+        head = humanize_lineage_label(base, max_len=max(8, LINEAGE_LABEL_MAX - len(suffix)))
+        candidate = f"{head}{suffix}"
+        n += 1
+        if n > 99:
+            break
+    return candidate
+
+
+def suggest_lineage_label(
+    creation: dict[str, Any] | None,
+    *,
+    taken: Sequence[str] | None = None,
+    api_key: str | None = None,
+    config: dict[str, Any] | None = None,
+    embed_fn: EmbedTextsFn | None = None,
+    propose_fn: ProposeFn | None = None,
+    embed_media_fn: EmbedMediaFn | None = None,
+    embed_texts_fn: EmbedTextsFn | None = None,
+    content: dict[str, Any] | None = None,
+) -> str:
+    """Short unique name for a generation chain, from file content when the title is junk."""
+    creation = dict(creation or {})
+    existing = str(creation.get("lineageLabel") or "").strip()
+    if existing and not title_is_weak_lineage_name(existing):
+        return uniquify_lineage_label(existing, taken)
+    title = str(creation.get("title") or creation.get("game") or "").strip()
+    prompt = str(creation.get("prompt") or "")
+    if title and not title_is_weak_lineage_name(title):
+        return uniquify_lineage_label(title, taken)
+
+    clone = dict(creation)
+    clone["title"] = ""
+    clone["game"] = ""
+    meta = clone.get("meta") if isinstance(clone.get("meta"), dict) else {}
+    if meta:
+        clone["meta"] = {k: v for k, v in meta.items() if k != "embeddingFilename"}
+    name = suggest_filename_for_creation(
+        clone,
+        api_key=api_key,
+        config=config,
+        embed_fn=embed_fn,
+        propose_fn=propose_fn,
+        embed_media_fn=embed_media_fn,
+        embed_texts_fn=embed_texts_fn,
+        content=content,
+        fallback="",
+    )
+    label = humanize_lineage_label(name)
+    if not label or title_is_weak_lineage_name(label):
+        from_prompt = title_from_prompt(prompt, "")
+        if from_prompt and not title_is_weak_lineage_name(from_prompt):
+            label = humanize_lineage_label(from_prompt)
+    if not label or title_is_weak_lineage_name(label):
+        label = "Lineage"
+    return uniquify_lineage_label(label, taken)
 
 
 def candidate_phrases(text: str, *, max_candidates: int = MAX_CANDIDATES) -> list[str]:

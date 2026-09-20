@@ -1,0 +1,24 @@
+---
+description: Ask before changing Studio routing, Gemini backends, or other locked product behavior that could override earlier work.
+alwaysApply: true
+---
+
+# Ask before overriding product behavior
+
+If a request would **add, remove, or change** how Studio chooses a job, which Gemini API runs, or another behavior we already locked in, **stop and ask** before implementing. Do not silently replace earlier work.
+
+The usage contract is [`synthetic_text_extruder/prompts/studio_router.md`](synthetic_text_extruder/prompts/studio_router.md) plus fixtures in `studio_router.fixtures.json`.
+
+## Ask first when
+
+- The new ask conflicts with an existing invariant (example: making the word “video” beat **create a report** / **summarize**, so a document job becomes Veo instead of Export PDF).
+- You would change the classifier policy, regex fallback, `generator.py` dispatch order, or which backend runs for a prompt.
+- A “fix” for one modality (Veo, Imagen, Lyria, text) could worsen another.
+- You would drop or rewrite a fixture or test that encodes current behavior.
+
+Say what would change, what it might break, and wait for an explicit yes.
+
+## Skip this for
+
+- Pure refactors, tests, lint, or helpers that do not change routing or user-visible behavior.
+- Docs or UI copy that only describes behavior you are **not** changing.

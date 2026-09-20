@@ -295,6 +295,39 @@ class Api:
         stored = normalize_media_folder(str(path))
         return {"ok": True, "path": stored, "resolved": str(path)}
 
+    def pick_exports_folder(self) -> dict[str, Any]:
+        """Pick the default folder for Viewer / editor Save As dialogs."""
+        from .config import normalize_exports_folder
+        from .media_store import exports_dir
+
+        if self._window is None:
+            return {"ok": False, "error": "No window"}
+        try:
+            start = str(exports_dir(self.config))
+        except OSError:
+            start = ""
+        dialog_kwargs: dict[str, Any] = {}
+        if start:
+            dialog_kwargs["directory"] = start
+        result = self._window.create_file_dialog(
+            _file_dialog("folder"),
+            **dialog_kwargs,
+        )
+        if not result:
+            return {"ok": False, "cancelled": True}
+        path = Path(result if isinstance(result, str) else result[0])
+        if path.is_file():
+            path = path.parent
+        try:
+            path = path.expanduser().resolve()
+            path.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            return {"ok": False, "error": f"Cannot use that folder: {exc}"}
+        if not path.is_dir():
+            return {"ok": False, "error": f"Not a folder: {path}"}
+        stored = normalize_exports_folder(str(path))
+        return {"ok": True, "path": stored, "resolved": str(path)}
+
     def relocate_media_files(self, source: Any = None) -> dict[str, Any]:
         """Move media files from a previous folder into the current media folder."""
         from .media_store import media_dir, relocate_media_to_folder
@@ -362,13 +395,17 @@ class Api:
         else:
             gemini["api_key_set"] = bool(resolve_gemini_key(cfg.get("gemini") or {}))
 
-        from .media_store import media_dir
+        from .media_store import exports_dir, media_dir
 
         paths = dict(cfg.get("paths") or {})
         try:
             paths["media_resolved"] = str(media_dir(cfg))
         except OSError:
             paths["media_resolved"] = str(paths.get("media") or "media")
+        try:
+            paths["exports_resolved"] = str(exports_dir(cfg))
+        except OSError:
+            paths["exports_resolved"] = str(paths.get("exports") or "exports")
 
         return {
             "backend": {"provider": "gemini"},
@@ -526,6 +563,329 @@ class Api:
 
     # ── Generation ────────────────────────────────────────────────────
 
+    def _lineage_edges_for_job(
+        self,
+        *,
+        basis_id: str,
+        source_creations: list[dict[str, Any]],
+        extract_job: bool,
+    ) -> tuple[list[dict[str, str]], set[str]]:
+        """Parent edges for a CREATE job. Extract jobs stay on the same node."""
+        edges: list[dict[str, str]] = []
+        seen: set[str] = set()
+        in_place: set[str] = set()
+        basis = (basis_id or "").strip()
+        if extract_job and basis:
+            in_place.add(basis)
+            return edges, in_place
+        if basis:
+            edges.append({"id": basis, "role": "basis"})
+            seen.add(basis)
+        for src in source_creations or []:
+            sid = str((src or {}).get("id") or "").strip()
+            if not sid or sid in seen:
+                continue
+            edges.append({"id": sid, "role": "source"})
+            seen.add(sid)
+        return edges, in_place
+
+    def _lineage_from_modality(
+        self, source_creations: list[dict[str, Any]] | None, basis_id: str = ""
+    ) -> str:
+        from .lineage import compact_from_modality
+        from .studio_sources import creation_source_modality
+
+        parents: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for src in source_creations or []:
+            sid = str((src or {}).get("id") or "").strip()
+            if sid:
+                seen.add(sid)
+            mod = creation_source_modality(src) or str((src or {}).get("modality") or "")
+            parents.append({"modality": mod})
+        if basis_id and basis_id not in seen:
+            item = self._creation_by_id(basis_id)
+            if item:
+                mod = creation_source_modality(item) or str(item.get("modality") or "")
+                parents.append({"modality": mod})
+        return compact_from_modality(parents)
+
+    def _lineage_reference_images(
+        self,
+        source_creations: list[dict[str, Any]] | None,
+        basis_id: str,
+    ) -> list[dict[str, Any]]:
+        """Ancestor image bytes for img2img when Lineage Use as Basis filled the tray."""
+        from .lineage import extra_sources_are_lineage_context, media_ancestor_ids
+        from .media_store import mime_for_path, read_media_bytes, resolve_media_path
+        from .studio_sources import creation_source_modality
+
+        items = [s for s in (source_creations or []) if isinstance(s, dict)]
+        if not extra_sources_are_lineage_context(items):
+            return []
+        bid = (basis_id or "").strip()
+        by_id = {str(s.get("id") or ""): s for s in items if str(s.get("id") or "")}
+        visual = by_id.get(bid)
+        if not visual:
+            return []
+        out: list[dict[str, Any]] = []
+        for aid in media_ancestor_ids(visual, by_id):
+            if aid == bid:
+                continue
+            src = by_id.get(aid)
+            if not src or creation_source_modality(src) != "image":
+                continue
+            raw = read_media_bytes(src.get("mediaPath"), config=self.config)
+            if not raw:
+                continue
+            path = resolve_media_path(src.get("mediaPath"), config=self.config)
+            mime = str(src.get("mimeType") or "") or (
+                mime_for_path(path) if path is not None else "image/png"
+            )
+            out.append({"bytes": raw, "mime_type": mime or "image/png"})
+        return out
+
+    def _finalize_creation(
+        self,
+        creation: dict[str, Any],
+        *,
+        edges: list[dict[str, str]] | None = None,
+        items: list[dict[str, Any]] | None = None,
+        in_place_ids: set[str] | None = None,
+        prompt_text: str | None = None,
+        from_modality: str = "",
+        to_modality: str = "",
+    ) -> dict[str, Any]:
+        """Stamp derivedFrom (or revisedAt) and nest new library files by lineage root."""
+        from .lineage import (
+            attach_derived_from,
+            attach_prompt_step,
+            derived_from_ids,
+            lineage_root_for_new,
+            stamp_revised_at,
+        )
+        from .media_store import place_library_media
+
+        item = dict(creation or {})
+        cid = str(item.get("id") or "").strip()
+        archive = list(items if items is not None else self.store.load())
+        in_place_ids = in_place_ids or set()
+        already = {str(c.get("id") or "") for c in archive}
+        if cid and (cid in in_place_ids or cid in already):
+            return stamp_revised_at(item)
+        if not item.get("derivedFrom") and edges:
+            item = attach_derived_from(item, edges)
+        if prompt_text:
+            item = attach_prompt_step(
+                item,
+                prompt=prompt_text,
+                from_modality=from_modality,
+                to_modality=to_modality or str(item.get("modality") or ""),
+            )
+            self._record_prompt_step(item, prompt_text)
+        if item.get("mediaPath"):
+            parent_ids = derived_from_ids(item)
+            root = lineage_root_for_new(archive + [item], parent_ids, cid or "media")
+            item = place_library_media(item, root or cid, config=self.config)
+        return item
+
+    def _save_dialog_kwargs(
+        self, save_filename: str, file_types: tuple[str, ...]
+    ) -> dict[str, Any]:
+        """Always open Save As in the configured exports folder.
+
+        pywebview/Windows restores the last-used directory if ``directory`` is
+        omitted or empty, so this always passes a real path. Picking another
+        folder in one dialog does not change the next Save As start folder.
+        """
+        from .media_store import default_exports_dir, exports_dir
+
+        kwargs: dict[str, Any] = {"save_filename": save_filename}
+        if file_types:
+            kwargs["file_types"] = file_types
+        try:
+            start = exports_dir(self.config)
+        except OSError:
+            start = default_exports_dir()
+            try:
+                start.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                pass
+        kwargs["directory"] = str(start)
+        return kwargs
+
+    def _lineage_db(self):
+        from .lineage_store import LineageStore, lineage_db_path
+
+        path = lineage_db_path(self.config)
+        store = getattr(self, "_lineage_db_store", None)
+        if store is None or Path(store.path) != path:
+            self._lineage_db_store = LineageStore(path)
+        return self._lineage_db_store
+
+    def _record_prompt_step(self, creation: dict[str, Any], prompt_text: str) -> None:
+        from .lineage import prompt_node_id, prompt_step_edge
+
+        item = creation or {}
+        cid = str(item.get("id") or "").strip()
+        if not cid:
+            return
+        step = prompt_step_edge(item)
+        node_id = str((step or {}).get("id") or prompt_node_id(cid))
+        try:
+            self._lineage_db().upsert_prompt_step(
+                node_id=node_id,
+                child_id=cid,
+                prompt_text=prompt_text,
+                from_modality=str((step or {}).get("fromModality") or ""),
+                to_modality=str(
+                    (step or {}).get("toModality") or item.get("modality") or ""
+                ),
+                created_at=str(item.get("createdAt") or ""),
+            )
+        except OSError:
+            logger.exception("Could not record lineage prompt step")
+
+    def lineage_graph(self, focus_id: str = "") -> dict[str, Any]:
+        """Connected components for the Lineage screen."""
+        from .lineage import lineage_payload
+
+        return {"ok": True, **lineage_payload(self.store.load(), focus_id=focus_id)}
+
+    def relabel_lineage_roots(
+        self, root_ids: list[str] | None = None, limit: int = 8
+    ) -> dict[str, Any]:
+        """Assign short unique names to chains whose Archive titles are filenames or UUIDs."""
+        from .embedding_filename import (
+            suggest_lineage_label,
+            title_is_weak_lineage_name,
+            uniquify_lineage_label,
+        )
+        from .lineage import connected_components, display_root_title
+
+        try:
+            cap = int(limit)
+        except (TypeError, ValueError):
+            cap = 8
+        cap = max(1, min(cap, 24))
+        wanted = {
+            str(item or "").strip()
+            for item in (root_ids or [])
+            if str(item or "").strip()
+        }
+        items = self.store.load()
+        by_id = {str(c.get("id") or ""): c for c in items if str(c.get("id") or "")}
+        components = connected_components(items)
+        taken: list[str] = []
+        for component in components:
+            root = by_id.get(str(component.get("rootId") or "")) or {}
+            title = display_root_title(root, str(component.get("rootId") or ""))
+            if title and not title_is_weak_lineage_name(title):
+                taken.append(title)
+        api_key = resolve_gemini_key(self.config)
+        labels: dict[str, str] = {}
+        changed = 0
+        for component in components:
+            rid = str(component.get("rootId") or "").strip()
+            if not rid or rid not in by_id:
+                continue
+            if wanted and rid not in wanted:
+                continue
+            root = dict(by_id[rid])
+            current = display_root_title(root, rid)
+            if current and not title_is_weak_lineage_name(current):
+                labels[rid] = current
+                continue
+            if changed >= cap:
+                continue
+            others = [t for t in taken if t.casefold() != current.casefold()]
+            label = suggest_lineage_label(
+                root,
+                taken=others,
+                api_key=api_key,
+                config=self.config,
+            )
+            if not label or title_is_weak_lineage_name(label):
+                for node in component.get("nodes") or []:
+                    nid = str((node or {}).get("id") or "").strip()
+                    if not nid or nid == rid:
+                        continue
+                    other = by_id.get(nid) or {}
+                    alt = str(other.get("title") or other.get("game") or "").strip()
+                    if alt and not title_is_weak_lineage_name(alt):
+                        label = uniquify_lineage_label(alt, others)
+                        break
+            if not label or title_is_weak_lineage_name(label):
+                continue
+            if str(root.get("lineageLabel") or "") != label:
+                root["lineageLabel"] = label
+                saved = self.store.upsert(root)
+                by_id[rid] = saved
+                changed += 1
+            labels[rid] = label
+            taken.append(label)
+        return {"ok": True, "labels": labels, "updated": changed}
+
+    def lineage_inspect(self, node_id: str = "") -> dict[str, Any]:
+        """Full prompt text or generated media for one Lineage graph node."""
+        from .lineage import inspect_lineage_node, is_prompt_node_id, prompt_step_edge
+
+        nid = str(node_id or "").strip()
+        items = self.store.load()
+        stored_text = ""
+        stored = None
+        if is_prompt_node_id(nid):
+            try:
+                stored = self._lineage_db().get_prompt_step(nid)
+            except OSError:
+                stored = None
+            if stored:
+                stored_text = str(stored.get("prompt_text") or "")
+        payload = inspect_lineage_node(items, nid, prompt_text=stored_text)
+        if payload.get("ok") and payload.get("kind") == "prompt":
+            text = str(payload.get("promptText") or "")
+            child_id = str(payload.get("childId") or "")
+            if text and child_id and not stored_text:
+                try:
+                    self._lineage_db().upsert_prompt_step(
+                        node_id=nid,
+                        child_id=child_id,
+                        prompt_text=text,
+                        from_modality=str(payload.get("fromModality") or ""),
+                        to_modality=str(payload.get("toModality") or ""),
+                        created_at=str(payload.get("createdAt") or ""),
+                    )
+                except OSError:
+                    pass
+            step = prompt_step_edge(next((c for c in items if str(c.get("id") or "") == child_id), None))
+            if stored:
+                if stored.get("from_modality"):
+                    payload["fromModality"] = stored["from_modality"]
+                if stored.get("to_modality"):
+                    payload["toModality"] = stored["to_modality"]
+            elif step:
+                payload["fromModality"] = str(step.get("fromModality") or payload.get("fromModality") or "")
+                payload["toModality"] = str(step.get("toModality") or payload.get("toModality") or "")
+        if (
+            payload.get("ok")
+            and payload.get("kind") == "media"
+            and not payload.get("missing")
+            and payload.get("mediaPath")
+        ):
+            media = self.get_media_payload(
+                {
+                    "id": payload.get("id"),
+                    "mediaPath": payload.get("mediaPath"),
+                    "mimeType": payload.get("mimeType"),
+                    "modality": payload.get("modality"),
+                }
+            )
+            if media.get("ok"):
+                payload["fileUrl"] = media.get("fileUrl") or media.get("dataUrl") or ""
+                if media.get("mimeType"):
+                    payload["mimeType"] = media["mimeType"]
+        return payload
+
     def create_creation(
         self,
         game: str,
@@ -558,11 +918,9 @@ class Api:
             }
 
         from .generator import _active_model_and_provider
-        from .modality import (
-            check_prompt_model_compatibility,
-            infer_layout_extract_intent,
-            infer_text_extract_intent,
-        )
+        from .modality import check_prompt_model_compatibility
+        from .studio_router import classify_studio_job
+        from .studio_sources import creation_source_modality
 
         desc_preview = (creation_description or "").strip() or game
         basis_id = (basis_creation_id or "").strip()
@@ -576,15 +934,22 @@ class Api:
             DEFAULT_REPORT_PROMPT,
             last_visual_source,
             match_quoted_source,
-            wants_source_report,
         )
-        from .collection_jobs import wants_collection_job
 
         if source_creations and not (creation_description or "").strip():
             desc_preview = DEFAULT_REPORT_PROMPT
-        extract_job = infer_layout_extract_intent(
-            desc_preview
-        ) or infer_text_extract_intent(desc_preview)
+        visual = last_visual_source(source_creations)
+        basis_mod_guess = creation_source_modality(visual) if visual else ""
+        if basis_mod_guess not in {"image", "video"}:
+            basis_mod_guess = ""
+        classified = classify_studio_job(
+            desc_preview,
+            source_creations,
+            config=self.config,
+            basis_modality=basis_mod_guess or None,
+        )
+        job = str(classified.get("job") or "")
+        extract_job = job in {"layout_extract", "text_extract"}
         named_visual = None
         if extract_job and source_creations:
             named_visual, match_err = match_quoted_source(
@@ -599,8 +964,8 @@ class Api:
         visual = named_visual or last_visual_source(source_creations)
         if visual and not basis_id:
             basis_id = str(visual.get("id") or "").strip()
-        will_report = wants_source_report(desc_preview, source_creations)
-        will_collection = wants_collection_job(desc_preview, source_creations)
+        will_report = job == "report"
+        will_collection = job == "collection"
         if basis_id:
             try:
                 basis_media = self._resolve_basis_media(basis_id)
@@ -610,14 +975,13 @@ class Api:
                 else:
                     return {"ok": False, "error": str(exc)}
             bmod = (basis_media or {}).get("modality")
-            if will_report or will_collection:
-                pass
-            elif infer_layout_extract_intent(desc_preview) or infer_text_extract_intent(
-                desc_preview
-            ):
+            if will_report or will_collection or extract_job:
                 pass
             elif bmod == "image":
                 desc_preview = f"Create an image: {desc_preview}"
+                refs = self._lineage_reference_images(source_creations, basis_id)
+                if refs and basis_media:
+                    basis_media["reference_media"] = refs
             elif bmod == "video":
                 desc_preview = f"Generate a video: {desc_preview}"
 
@@ -688,17 +1052,46 @@ class Api:
                     tool_aliases=tools_for_job,
                     search_query=search_override or None,
                     source_creations=source_creations or None,
+                    studio_job=classified,
                 )
                 if cancel_evt.is_set():
                     raise GenerationCancelled("Cancelled by user")
                 extras = []
                 if isinstance(result, dict):
                     extras = list(result.pop("_also_upsert", None) or [])
+                items = self.store.load()
+                edges, in_place = self._lineage_edges_for_job(
+                    basis_id=basis_id,
+                    source_creations=source_creations,
+                    extract_job=extract_job,
+                )
+                prompt_text = desc_override or str((result or {}).get("prompt") or game)
+                from_mod = self._lineage_from_modality(source_creations, basis_id)
+                result = self._finalize_creation(
+                    result,
+                    edges=edges,
+                    items=items,
+                    in_place_ids=in_place,
+                    prompt_text=prompt_text,
+                    from_modality=from_mod,
+                    to_modality=str((result or {}).get("modality") or ""),
+                )
                 saved = self.store.upsert(result)
+                finalized_extras: list[dict[str, Any]] = [saved]
                 for extra in extras:
                     if isinstance(extra, dict) and extra.get("id"):
                         try:
-                            self.store.upsert(extra)
+                            extra = self._finalize_creation(
+                                extra,
+                                edges=edges,
+                                items=items + finalized_extras,
+                                in_place_ids=in_place,
+                                prompt_text=prompt_text,
+                                from_modality=from_mod,
+                                to_modality=str(extra.get("modality") or ""),
+                            )
+                            extra = self.store.upsert(extra)
+                            finalized_extras.append(extra)
                         except Exception:  # noqa: BLE001
                             logger.debug(
                                 "Could not save collection output %s",
@@ -955,7 +1348,7 @@ class Api:
                 )
                 if cancel_evt.is_set():
                     raise GenerationCancelled("Cancelled by user")
-                saved = self.store.upsert(updated)
+                saved = self.store.upsert(self._finalize_creation(updated, in_place_ids={creation_id}))
                 self._set_job(
                     job_id,
                     status="done",
@@ -1064,7 +1457,7 @@ class Api:
                 )
                 if cancel_evt.is_set():
                     raise GenerationCancelled("Cancelled by user")
-                saved = self.store.upsert(updated)
+                saved = self.store.upsert(self._finalize_creation(updated, in_place_ids={creation_id}))
                 self._set_job(
                     job_id,
                     status="done",
@@ -1210,7 +1603,7 @@ class Api:
 
     def get_media_payload(self, creation: dict[str, Any] | None = None) -> dict[str, Any]:
         """Return media for Viewer/Studio: data URL and/or same-origin HTTP URL."""
-        from .media_store import media_data_url, media_file_uri, mime_for_path, resolve_media_path
+        from .media_store import media_data_url, media_file_uri, media_http_relpath, mime_for_path, resolve_media_path
 
         creation = creation or {}
         media_path = creation.get("mediaPath")
@@ -1228,7 +1621,10 @@ class Api:
         # and large image data URLs can choke the pywebview bridge.
         http_url = None
         if self._ui_origin:
-            http_url = f"{self._ui_origin}/media/{path.name}"
+            from urllib.parse import quote
+
+            rel = media_http_relpath(path, self.config)
+            http_url = f"{self._ui_origin}/media/{quote(rel, safe='/')}"
         file_uri = http_url or media_file_uri(media_path)
 
         if is_video or is_audio or is_pdf:
@@ -1261,7 +1657,8 @@ class Api:
         """Overwrite a creation's media file from a base64 payload (Viewer Edit Apply)."""
         import base64
 
-        from .media_store import write_media_bytes
+        from .lineage import stamp_revised_at
+        from .media_store import overwrite_media_bytes
 
         creation_id = (creation_id or "").strip()
         if not creation_id:
@@ -1289,8 +1686,8 @@ class Api:
         if not raw:
             return {"ok": False, "error": "Empty image payload"}
 
-        stored = write_media_bytes(
-            creation_id, raw, mime_type=mime_type or "image/png", config=self.config
+        stored = overwrite_media_bytes(
+            target, raw, mime_type=mime_type or "image/png", config=self.config
         )
         target = dict(target)
         target["mediaPath"] = stored["mediaPath"]
@@ -1300,7 +1697,7 @@ class Api:
         from .extract_text import clear_extraction_fields
 
         target = clear_layout_fields(clear_extraction_fields(target))
-        saved = self.store.upsert(target)
+        saved = self.store.upsert(stamp_revised_at(target))
         return {"ok": True, "creation": saved}
 
     def ffmpeg_status(self) -> dict[str, Any]:
@@ -1394,7 +1791,8 @@ class Api:
 
     def edit_video(self, creation_id: str, ops: dict[str, Any] | None = None) -> dict[str, Any]:
         """Apply filters/crop/rotate/trim to a video creation and overwrite its media."""
-        from .media_store import write_media_bytes
+        from .lineage import stamp_revised_at
+        from .media_store import overwrite_media_bytes
 
         err, dest, target = self._render_edited_video(creation_id, ops)
         if err is not None:
@@ -1402,8 +1800,8 @@ class Api:
         assert dest is not None and target is not None
         try:
             raw = dest.read_bytes()
-            stored = write_media_bytes(
-                creation_id, raw, mime_type="video/mp4", config=self.config
+            stored = overwrite_media_bytes(
+                target, raw, mime_type="video/mp4", config=self.config
             )
             target = dict(target)
             target["mediaPath"] = stored["mediaPath"]
@@ -1413,7 +1811,7 @@ class Api:
             from .extract_text import clear_extraction_fields
 
             target = clear_layout_fields(clear_extraction_fields(target))
-            saved = self.store.upsert(target)
+            saved = self.store.upsert(stamp_revised_at(target))
             return {"ok": True, "creation": saved}
         except Exception as exc:  # noqa: BLE001
             logger.exception("edit_video failed")
@@ -1441,8 +1839,7 @@ class Api:
             safe = self._media_save_basename(target, fallback="video")
             result = self._window.create_file_dialog(
                 _file_dialog("save"),
-                save_filename=f"{safe}.mp4",
-                file_types=_save_file_types(".mp4"),
+                **self._save_dialog_kwargs(f"{safe}.mp4", _save_file_types(".mp4")),
             )
             if not result:
                 return {"ok": False, "cancelled": True}
@@ -1499,6 +1896,14 @@ class Api:
                     title=f"{base_title} ({label})",
                     model_info=model_info if isinstance(model_info, dict) else None,
                     creation_id=cid,
+                )
+                creation = self._finalize_creation(
+                    creation,
+                    edges=[{"id": creation_id, "role": "split"}],
+                    items=self.store.load() + creations_out,
+                    prompt_text="Split",
+                    from_modality="video",
+                    to_modality="video",
                 )
                 creations_out.append(self.store.upsert(creation))
             return {"ok": True, "creations": creations_out}
@@ -1558,7 +1963,16 @@ class Api:
                 title=title or "Spliced Video",
                 creation_id=new_id,
             )
-            saved = self.store.upsert(creation)
+            saved = self.store.upsert(
+                self._finalize_creation(
+                    creation,
+                    edges=[{"id": cid, "role": "splice"} for cid in ids],
+                    items=items,
+                    prompt_text="Splice",
+                    from_modality="video",
+                    to_modality="video",
+                )
+            )
             return {"ok": True, "creation": saved}
         except FfmpegNotFoundError as exc:
             return {"ok": False, "error": str(exc)}
@@ -1654,8 +2068,7 @@ class Api:
         default_name = f"{safe}{ext}"
         result = self._window.create_file_dialog(
             _file_dialog("save"),
-            save_filename=default_name,
-            file_types=_save_file_types(ext),
+            **self._save_dialog_kwargs(default_name, _save_file_types(ext)),
         )
         if not result:
             return {"ok": False, "cancelled": True}
@@ -1672,8 +2085,9 @@ class Api:
             return {"ok": False, "error": "No window"}
         result = self._window.create_file_dialog(
             _file_dialog("save"),
-            save_filename=default_name,
-            file_types=_save_file_types(Path(default_name).suffix),
+            **self._save_dialog_kwargs(
+                default_name, _save_file_types(Path(default_name).suffix)
+            ),
         )
         if not result:
             return {"ok": False, "cancelled": True}
@@ -1705,8 +2119,9 @@ class Api:
 
         result = self._window.create_file_dialog(
             _file_dialog("save"),
-            save_filename=default_name,
-            file_types=_save_file_types(Path(default_name).suffix),
+            **self._save_dialog_kwargs(
+                default_name, _save_file_types(Path(default_name).suffix)
+            ),
         )
         if not result:
             return {"ok": False, "cancelled": True}
@@ -1773,7 +2188,7 @@ class Api:
                 model_info={"provider": "import", "repo_id": path.name},
             )
             creation = apply_original_filename(creation, path.name)
-            out["creation"] = self.store.upsert(creation)
+            out["creation"] = self.store.upsert(self._finalize_creation(creation))
         return out
 
     def _import_media_from_path(self, path: Path, modality: str) -> dict[str, Any]:
@@ -1832,7 +2247,7 @@ class Api:
             model_info={"provider": "import", "repo_id": path.name, "modality": mod},
         )
         creation = apply_original_filename(creation, path.name)
-        saved = self.store.upsert(creation)
+        saved = self.store.upsert(self._finalize_creation(creation))
         return {"ok": True, "creation": saved, "modality": mod}
 
     def import_text_file(self, save_to_archives: bool = False) -> dict[str, Any]:
@@ -2129,7 +2544,15 @@ class Api:
             if source.get(key) is not None and key not in creation:
                 creation[key] = copy.deepcopy(source.get(key))
 
-        saved = self.store.upsert(creation)
+        saved = self.store.upsert(
+            self._finalize_creation(
+                creation,
+                edges=[{"id": creation_id, "role": "duplicate"}],
+                prompt_text="Duplicate",
+                from_modality=mod if mod != "text" else "text",
+                to_modality=mod if mod != "text" else "text",
+            )
+        )
         return {"ok": True, "creation": saved}
 
     def open_json_import(self) -> dict[str, Any]:

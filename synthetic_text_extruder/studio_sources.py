@@ -138,7 +138,14 @@ def wants_source_report(prompt: str, sources: list[dict[str, Any]] | None) -> bo
             return False
 
     if len(items) >= 2:
-        return True
+        from .lineage import extra_sources_are_lineage_context
+
+        if extra_sources_are_lineage_context(items):
+            visual = last_visual_source(items)
+            items = [visual] if visual else items[-1:]
+            mods = [creation_source_modality(s) for s in items]
+        else:
+            return True
 
     only = mods[0]
     if only in {"text", "pdf", "audio"}:
