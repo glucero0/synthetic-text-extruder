@@ -254,6 +254,11 @@ def title_is_weak_lineage_name(title: str) -> bool:
     return False
 
 
+def lineage_chain_needs_name(creation: dict[str, Any] | None) -> bool:
+    """True until Lineage has written ``lineageLabel`` once (auto or Rename)."""
+    return not str((creation or {}).get("lineageLabel") or "").strip()
+
+
 def humanize_lineage_label(text: str, *, max_len: int = LINEAGE_LABEL_MAX) -> str:
     """Short display name: spaces, not a filesystem slug."""
     raw = str(text or "").strip()
@@ -300,11 +305,15 @@ def suggest_lineage_label(
     """Short unique name for a generation chain, from file content when the title is junk."""
     creation = dict(creation or {})
     existing = str(creation.get("lineageLabel") or "").strip()
-    if existing and not title_is_weak_lineage_name(existing):
-        return uniquify_lineage_label(existing, taken)
-    title = str(creation.get("title") or creation.get("game") or "").strip()
+    if existing:
+        return existing
     prompt = str(creation.get("prompt") or "")
-    if title and not title_is_weak_lineage_name(title):
+    title = str(creation.get("title") or creation.get("game") or "").strip()
+    if (
+        title
+        and not title_is_weak_lineage_name(title)
+        and not title_is_prompt_dump(title, prompt)
+    ):
         return uniquify_lineage_label(title, taken)
 
     clone = dict(creation)

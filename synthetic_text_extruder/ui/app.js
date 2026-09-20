@@ -38,6 +38,7 @@
     lineageDrawnComponent: null,
     lineageLabeledIds: {},
     lineageRelabelSeq: 0,
+    lineageGraphComponents: null,
     presets: [],
     creationTypes: [],
     studioBasis: null, // last image/video in studioSources (extract / I2V)
@@ -970,7 +971,15 @@
       const msgEl = $("#confirm-message");
       const yesBtn = $("#confirm-yes");
       const noBtn = $("#confirm-no");
+      const inputWrap = $("#confirm-input-wrap");
+      const inputEl = $("#confirm-input");
+      const inputLabel = $("#confirm-input-label");
       if (!overlay || !yesBtn || !noBtn) {
+        if (opts.input) {
+          const typed = window.prompt(message || title, opts.input.value || "");
+          resolve(typed == null ? null : String(typed));
+          return;
+        }
         resolve(window.confirm(message || title));
         return;
       }
@@ -980,22 +989,61 @@
       if (msgEl) msgEl.textContent = message || "";
       yesBtn.textContent = opts.yesLabel || "Yes";
       noBtn.textContent = opts.noLabel || "No";
+      if (inputWrap && inputEl) {
+        if (opts.input) {
+          inputWrap.hidden = false;
+          inputEl.value = opts.input.value || "";
+          inputEl.placeholder = opts.input.placeholder || "";
+          if (inputLabel) inputLabel.textContent = opts.input.label || "Name";
+        } else {
+          inputWrap.hidden = true;
+          inputEl.value = "";
+        }
+      }
       overlay.hidden = false;
       detachIme();
 
       const finish = (value) => {
         overlay.hidden = true;
+        if (inputWrap) inputWrap.hidden = true;
         yesBtn.textContent = prevYes;
         noBtn.textContent = prevNo;
         yesBtn.removeEventListener("click", onYes);
         noBtn.removeEventListener("click", onNo);
+        overlay.removeEventListener("keydown", onKey);
         resolve(value);
       };
-      const onYes = () => finish(true);
-      const onNo = () => finish(false);
+      const onYes = () => {
+        if (opts.input) {
+          const text = String((inputEl && inputEl.value) || "").trim();
+          if (!text) {
+            if (inputEl) inputEl.focus();
+            return;
+          }
+          finish(text);
+          return;
+        }
+        finish(true);
+      };
+      const onNo = () => finish(opts.input ? null : false);
+      const onKey = (e) => {
+        if (e.key === "Enter" && opts.input) {
+          e.preventDefault();
+          onYes();
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          onNo();
+        }
+      };
       yesBtn.addEventListener("click", onYes);
       noBtn.addEventListener("click", onNo);
-      (opts.focusNo ? noBtn : yesBtn).focus();
+      overlay.addEventListener("keydown", onKey);
+      if (opts.input && inputEl) {
+        inputEl.focus();
+        inputEl.select();
+      } else {
+        (opts.focusNo ? noBtn : yesBtn).focus();
+      }
     });
   }
 
@@ -3288,7 +3336,7 @@
     if (panel) panel.hidden = true;
     if (btn) btn.setAttribute("aria-expanded", "false");
     closeStudioSourceMenu();
-    closeLineageNodeMenu();
+    closeLineageMenus();
   }
 
   function toggleAppMenu(force) {
@@ -5950,11 +5998,80 @@
     return ((component.nodes || []).some((n) => n && n.id === want));
   }
 
+  function lineageSearchQuery() {
+    const el = $("#lineage-search");
+    return String((el && el.value) || "").trim().toLowerCase();
+  }
+
+  function lineageCreationSearchText(creation) {
+    if (!creation) return "";
+    const meta = creation.meta && typeof creation.meta === "object" ? creation.meta : {};
+    return [
+      creation.id,
+      creation.title,
+      creation.game,
+      creation.prompt,
+      creation.overview,
+      creation.creationType,
+      creation.platform,
+      creation.lineageLabel,
+      creation.extractedText,
+      meta.extractedText,
+      creation.modality,
+    ]
+      .map((part) => String(part || ""))
+      .join(" ")
+      .toLowerCase();
+  }
+
+  function lineageNodeSearchText(node, component, creationsById) {
+    const bits = [
+      node && node.id,
+      node && node.title,
+      node && node.promptPreview,
+      node && node.modality,
+      node && node.kind,
+    ];
+    const cid = node && node.kind === "prompt"
+      ? lineageChildCreationId(node, component)
+      : String((node && node.id) || "");
+    const creation = creationsById[String((node && node.id) || "")] || creationsById[cid];
+    if (creation) bits.push(lineageCreationSearchText(creation));
+    return bits.map((part) => String(part || "")).join(" ").toLowerCase();
+  }
+
+  function lineageNodeMatchesQuery(node, query, component, creationsById) {
+    if (!query) return false;
+    return lineageNodeSearchText(node, component, creationsById).indexOf(query) !== -1;
+  }
+
+  function lineageComponentMatchesQuery(component, query, creationsById) {
+    if (!query) return true;
+    const hay = [
+      component && component.rootTitle,
+      component && component.rootId,
+      ((component && component.nodes) || [])
+        .map((node) => lineageNodeSearchText(node, component, creationsById))
+        .join(" "),
+    ]
+      .join(" ")
+      .toLowerCase();
+    return hay.indexOf(query) !== -1;
+  }
+
   function visibleLineageComponents(components) {
     const all = Array.isArray(components) ? components : [];
-    if (state.lineageShowOrphans) return all.slice();
+    const query = lineageSearchQuery();
+    const creationsById = {};
+    (state.creations || []).forEach((item) => {
+      if (item && item.id) creationsById[item.id] = item;
+    });
     const focus = state.lineageFocusId || "";
-    return all.filter((c) => !c.orphan || lineageComponentHasId(c, focus));
+    return all.filter((c) => {
+      if (query) return lineageComponentMatchesQuery(c, query, creationsById);
+      if (state.lineageShowOrphans) return true;
+      return !c.orphan || lineageComponentHasId(c, focus);
+    });
   }
 
   function lineageNodeTitle(node) {
@@ -6062,6 +6179,17 @@
     if (!svg) return;
     svg.innerHTML = "";
     const layout = layoutLineageComponent(component);
+    const query = lineageSearchQuery();
+    const creationsById = {};
+    (state.creations || []).forEach((item) => {
+      if (item && item.id) creationsById[item.id] = item;
+    });
+    (layout.nodes || []).forEach((node) => {
+      if (!node) return;
+      node._lineageMatch = !!(
+        query && lineageNodeMatchesQuery(node, query, component, creationsById)
+      );
+    });
     const world = document.createElementNS("http://www.w3.org/2000/svg", "g");
     world.setAttribute("id", "lineage-world");
     const edgesG = document.createElementNS("http://www.w3.org/2000/svg", "g");
@@ -6099,7 +6227,8 @@
         "lineage-node" +
           (node.kind === "prompt" ? " prompt" : "") +
           (node.missing ? " missing" : "") +
-          (state.lineageSelectedId === node.id ? " active" : "")
+          (state.lineageSelectedId === node.id ? " active" : "") +
+          (node._lineageMatch ? " match" : "")
       );
       g.setAttribute("data-node-id", node.id);
       g.setAttribute(
@@ -6278,19 +6407,17 @@
     }
   }
 
-  function setLineageViewerChrome(title, meta, showOpen) {
+  function setLineageViewerChrome(title, meta) {
     const titleEl = $("#lineage-viewer-title");
     const metaEl = $("#lineage-viewer-meta");
-    const openBtn = $("#btn-lineage-open-viewer");
     if (titleEl) titleEl.textContent = title || "Select a node";
     if (metaEl) metaEl.textContent = meta || "";
-    if (openBtn) openBtn.hidden = !showOpen;
   }
 
   function renderLineagePaneEmpty(message) {
     stopLineageViewerMedia();
     state.lineageOpenCreation = null;
-    setLineageViewerChrome("Select a node", "", false);
+    setLineageViewerChrome("Select a node", "");
     const body = $("#lineage-viewer-body");
     if (!body) return;
     body.innerHTML = "";
@@ -6320,7 +6447,7 @@
       if (fromM && toM) bits.push(fromM + " → " + toM);
       else if (toM || fromM) bits.push(toM || fromM);
       if (stamp) bits.push(stamp);
-      setLineageViewerChrome("Prompt", bits.slice(1).join(" · "), false);
+      setLineageViewerChrome("Prompt", bits.slice(1).join(" · "));
       const pre = document.createElement("pre");
       pre.className = "lineage-viewer-pre";
       pre.textContent = String(payload.promptText || "").trim() || "(empty prompt)";
@@ -6329,7 +6456,7 @@
     }
     if (payload.missing) {
       state.lineageOpenCreation = null;
-      setLineageViewerChrome(payload.title || "Missing parent", "Not in Archives", false);
+      setLineageViewerChrome(payload.title || "Missing parent", "Not in Archives");
       const p = document.createElement("p");
       p.className = "muted";
       p.textContent = "This parent is no longer in Archives.";
@@ -6344,8 +6471,7 @@
     const typeLabel = String(payload.creationType || modality);
     setLineageViewerChrome(
       payload.title || "Untitled",
-      (typeLabel ? typeLabel + " · " : "") + (stamp || modality),
-      !!creation
+      (typeLabel ? typeLabel + " · " : "") + (stamp || modality)
     );
     const fileUrl = String(payload.fileUrl || "");
     if (modality === "image" && fileUrl) {
@@ -6424,7 +6550,7 @@
       renderLineagePaneEmpty("Python bridge required to view lineage nodes.");
       return;
     }
-    setLineageViewerChrome("Loading…", "", false);
+    setLineageViewerChrome("Loading…", "");
     try {
       const payload = await a.lineage_inspect(id);
       if (seq !== state.lineageInspectSeq) return;
@@ -6435,7 +6561,8 @@
     }
   }
 
-  async function renderLineage() {
+  async function renderLineage(opts) {
+    opts = opts || {};
     const win = $("#win-lineage");
     if (win && !win.hidden && !lineageCanvasSize().ready) {
       await new Promise((resolve) => {
@@ -6445,22 +6572,28 @@
     applyLineagePaneWidth(state.lineagePaneWidth);
     const list = $("#lineage-list");
     const a = api();
+    const refresh = opts.refresh !== false;
     let payload = null;
-    if (a && a.lineage_graph) {
-      try {
-        payload = await a.lineage_graph(state.lineageFocusId || "");
-      } catch (_) {
-        payload = null;
+    if (refresh || !state.lineageGraphComponents) {
+      if (a && a.lineage_graph) {
+        try {
+          payload = await a.lineage_graph(state.lineageFocusId || "");
+        } catch (_) {
+          payload = null;
+        }
+      }
+      const fetched =
+        payload && payload.ok && Array.isArray(payload.components)
+          ? payload.components
+          : [];
+      state.lineageGraphComponents = fetched;
+      if (payload && payload.focusRootId) {
+        state.lineageRootId = payload.focusRootId;
       }
     }
-    const components =
-      payload && payload.ok && Array.isArray(payload.components)
-        ? payload.components
-        : [];
-    if (payload && payload.focusRootId) {
-      state.lineageRootId = payload.focusRootId;
-    }
+    const components = state.lineageGraphComponents || [];
     const visible = visibleLineageComponents(components);
+    const query = lineageSearchQuery();
     if (
       state.lineageRootId &&
       !visible.some((c) => c.rootId === state.lineageRootId)
@@ -6477,9 +6610,11 @@
       list.innerHTML = "";
       if (!visible.length) {
         const empty = document.createElement("li");
-        empty.textContent = components.length
-          ? "No generation chains yet. CREATE (or Use as Basis, then CREATE) to start a tree. Older imports stay hidden unless you show orphans."
-          : "No archive items yet.";
+        empty.textContent = query
+          ? "No matching chains."
+          : components.length
+            ? "No generation chains yet. CREATE (or Use as Basis, then CREATE) to start a tree. Older imports stay hidden unless you show orphans."
+            : "No archive items yet.";
         list.appendChild(empty);
       }
       visible.forEach((component) => {
@@ -6504,7 +6639,23 @@
           state.lineageSelectedId = component.rootId || "";
           state.lineageFocusId = component.rootId || state.lineageFocusId;
           state.lineagePan = { x: 0, y: 0, scale: 1, reset: true };
-          void renderLineage();
+          void renderLineage({ refresh: false });
+        });
+        btn.addEventListener("contextmenu", (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          const switched = state.lineageRootId !== component.rootId;
+          state.lineageRootId = component.rootId;
+          state.lineageSelectedId = component.rootId || "";
+          state.lineageFocusId = component.rootId || state.lineageFocusId;
+          if (switched) {
+            state.lineagePan = { x: 0, y: 0, scale: 1, reset: true };
+            void renderLineage({ refresh: false }).then(() => {
+              openLineageChainMenu(ev, component);
+            });
+            return;
+          }
+          openLineageChainMenu(ev, component);
         });
         li.appendChild(btn);
         list.appendChild(li);
@@ -6519,7 +6670,27 @@
         centerLineageView();
       });
     }
-    const nodeId = defaultLineageNodeId(selected);
+    const creationsById = {};
+    (state.creations || []).forEach((item) => {
+      if (item && item.id) creationsById[item.id] = item;
+    });
+    let nodeId = defaultLineageNodeId(selected);
+    if (query && selected) {
+      const currentNode = ((selected.nodes || []).find(
+        (node) => node && node.id === state.lineageSelectedId
+      ));
+      if (
+        currentNode &&
+        lineageNodeMatchesQuery(currentNode, query, selected, creationsById)
+      ) {
+        nodeId = currentNode.id;
+      } else {
+        const match = (selected.nodes || []).find((node) =>
+          lineageNodeMatchesQuery(node, query, selected, creationsById)
+        );
+        if (match && match.id) nodeId = match.id;
+      }
+    }
     if (nodeId) {
       selectLineageNode(nodeId);
     } else {
@@ -6527,32 +6698,36 @@
       renderLineagePaneEmpty(
         visible.length
           ? "Click a prompt or a generated item on the graph to view it here."
-          : components.length
-            ? "No generation chains yet. CREATE (or Use as Basis, then CREATE) to start a tree."
-            : "No archive items yet."
+          : query
+            ? "No matching chains."
+            : components.length
+              ? "No generation chains yet. CREATE (or Use as Basis, then CREATE) to start a tree."
+              : "No archive items yet."
       );
     }
     void refreshLineageLabels(visible);
   }
 
-  function closeLineageNodeMenu() {
-    const menu = $("#lineage-node-menu");
-    if (menu) {
-      menu.hidden = true;
-      delete menu.dataset.nodeId;
-      delete menu.dataset.nodeKind;
+  function closeLineageMenus() {
+    const nodeMenu = $("#lineage-node-menu");
+    if (nodeMenu) {
+      nodeMenu.hidden = true;
+      delete nodeMenu.dataset.nodeId;
+      delete nodeMenu.dataset.nodeKind;
+    }
+    const chainMenu = $("#lineage-chain-menu");
+    if (chainMenu) {
+      chainMenu.hidden = true;
+      delete chainMenu.dataset.rootId;
     }
   }
 
-  function openLineageNodeMenu(ev, node) {
-    const menu = $("#lineage-node-menu");
-    if (!menu || !node) return;
-    closeAppMenus();
-    closeStudioSourceMenu();
-    closeLineageNodeMenu();
-    menu.dataset.nodeId = node.id || "";
-    menu.dataset.nodeKind = node.kind || "";
-    menu.hidden = false;
+  function closeLineageNodeMenu() {
+    closeLineageMenus();
+  }
+
+  function positionLineageMenu(menu, ev) {
+    if (!menu) return;
     const menuW = menu.offsetWidth || 180;
     const menuH = menu.offsetHeight || 44;
     let left = ev.clientX;
@@ -6565,6 +6740,47 @@
     }
     menu.style.left = Math.round(left) + "px";
     menu.style.top = Math.round(top) + "px";
+  }
+
+  function setLineageMenuItemVisible(menu, action, visible) {
+    const item = menu && menu.querySelector("[data-action='" + action + "']");
+    if (item) item.hidden = !visible;
+  }
+
+  function openLineageNodeMenu(ev, node) {
+    const menu = $("#lineage-node-menu");
+    if (!menu || !node) return;
+    closeAppMenus();
+    closeStudioSourceMenu();
+    closeLineageMenus();
+    const isPrompt = node.kind === "prompt";
+    const missing = !!node.missing;
+    const modality = String(node.modality || "").toLowerCase();
+    const canOpen = !isPrompt && !missing;
+    const canExport = canOpen;
+    const canExplorer = canOpen && (modality === "image" || modality === "video" || modality === "audio" || modality === "pdf");
+    const canEdit = canOpen && (modality === "image" || modality === "video");
+    menu.dataset.nodeId = node.id || "";
+    menu.dataset.nodeKind = node.kind || "";
+    setLineageMenuItemVisible(menu, "use-basis", !missing);
+    setLineageMenuItemVisible(menu, "open-viewer", canOpen);
+    setLineageMenuItemVisible(menu, "export", canExport);
+    setLineageMenuItemVisible(menu, "show-explorer", canExplorer);
+    setLineageMenuItemVisible(menu, "edit", canEdit);
+    setLineageMenuItemVisible(menu, "delete", !missing);
+    menu.hidden = false;
+    positionLineageMenu(menu, ev);
+  }
+
+  function openLineageChainMenu(ev, component) {
+    const menu = $("#lineage-chain-menu");
+    if (!menu || !component) return;
+    closeAppMenus();
+    closeStudioSourceMenu();
+    closeLineageMenus();
+    menu.dataset.rootId = component.rootId || "";
+    menu.hidden = false;
+    positionLineageMenu(menu, ev);
   }
 
   function lineageChildCreationId(node, component) {
@@ -6723,6 +6939,257 @@
     );
   }
 
+  function lineageDescendantCount(nodeId, component) {
+    const nodes = (component && component.nodes) || [];
+    const edges = (component && component.edges) || [];
+    const start = String(nodeId || "");
+    if (!start) return 0;
+    const seen = new Set();
+    const stack = [start];
+    while (stack.length) {
+      const id = stack.pop();
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      edges.forEach((edge) => {
+        if (edge && edge.from === id && edge.to) stack.push(String(edge.to));
+      });
+    }
+    const mediaIds = new Set(
+      nodes
+        .filter((node) => node && node.kind !== "prompt" && !node.missing && node.id)
+        .map((node) => String(node.id))
+    );
+    let count = 0;
+    seen.forEach((id) => {
+      if (mediaIds.has(id)) count += 1;
+    });
+    if (start.indexOf("prm_") === 0) {
+      const child = lineageChildCreationId({ id: start, kind: "prompt" }, component);
+      if (child && mediaIds.has(child) && !seen.has(child)) count += 1;
+    }
+    return count;
+  }
+
+  async function applyLineageDeletion(res) {
+    if (!res || !res.ok) {
+      showToast((res && res.error) || "Delete failed.");
+      return false;
+    }
+    const deleted = new Set((res.deleted || []).map((id) => String(id)));
+    if (Array.isArray(res.creations)) state.creations = res.creations;
+    if (state.active && deleted.has(String(state.active.id || ""))) {
+      renderDocument(null);
+    }
+    if (deleted.has(String(state.lineageFocusId || ""))) state.lineageFocusId = "";
+    if (deleted.has(String(state.lineageSelectedId || ""))) state.lineageSelectedId = "";
+    if (deleted.has(String(state.lineageRootId || ""))) state.lineageRootId = "";
+    state.lineageGraphComponents = null;
+    state.lineagePan = { x: 0, y: 0, scale: 1, reset: true };
+    renderArchives();
+    await renderLineage();
+    showToast(
+      deleted.size > 1
+        ? "Deleted " + deleted.size + " items from this branch."
+        : "Deleted that item."
+    );
+    return true;
+  }
+
+  async function openLineageNodeInViewer(nodeId) {
+    closeLineageMenus();
+    const component = state.lineageDrawnComponent || { nodes: [], edges: [] };
+    const node = ((component.nodes || []).find((item) => item && item.id === nodeId)) || {
+      id: nodeId,
+    };
+    if (node.kind === "prompt" || node.missing) {
+      showToast("Open that generated item from the graph, not the prompt node.");
+      return;
+    }
+    const creation = await resolveLineageCreation(node.id);
+    if (!creation) {
+      showToast("Could not open that item in Viewer.");
+      return;
+    }
+    renderDocument(creation);
+  }
+
+  async function exportLineageNode(nodeId) {
+    closeLineageMenus();
+    const component = state.lineageDrawnComponent || { nodes: [], edges: [] };
+    const node = ((component.nodes || []).find((item) => item && item.id === nodeId)) || {
+      id: nodeId,
+    };
+    if (node.kind === "prompt" || node.missing) {
+      showToast("Export the generated item, not the prompt node.");
+      return;
+    }
+    const creation = await resolveLineageCreation(node.id);
+    if (!creation) {
+      showToast("Could not export that item.");
+      return;
+    }
+    const a = api();
+    if (!a) return;
+    const modality = creationModality(creation);
+    beginBusy("Export", "Choosing a filename…", { delayMs: 0 });
+    try {
+      if (modality === "image" || modality === "video" || modality === "audio" || modality === "pdf") {
+        const res = await a.export_creation_media(creation);
+        if (res && res.ok) {
+          showToast(
+            modality === "video"
+              ? "Saved MP4"
+              : modality === "audio"
+                ? "Saved audio"
+                : modality === "pdf"
+                  ? "Saved PDF"
+                  : "Saved PNG"
+          );
+        } else if (!res || !res.cancelled) {
+          showToast((res && res.error) || "Export failed");
+        }
+        return;
+      }
+      const txt = await a.export_creation_txt(creation);
+      const name = exportBaseName(creation) + ".txt";
+      const saved = await a.save_file_dialog(name, txt);
+      if (saved && saved.ok) showToast("Saved TXT");
+      else if (!saved || !saved.cancelled) showToast((saved && saved.error) || "Export failed");
+    } catch (err) {
+      showToast(String(err));
+    } finally {
+      endBusy("Ready");
+    }
+  }
+
+  async function revealLineageNode(nodeId) {
+    closeLineageMenus();
+    const component = state.lineageDrawnComponent || { nodes: [], edges: [] };
+    const node = ((component.nodes || []).find((item) => item && item.id === nodeId)) || {
+      id: nodeId,
+    };
+    const creationId =
+      node.kind === "prompt" ? lineageChildCreationId(node, component) : String(node.id || "");
+    const a = api();
+    if (!a || !a.reveal_in_explorer) {
+      showToast("Python bridge required to show the file.");
+      return;
+    }
+    try {
+      const res = await a.reveal_in_explorer(creationId);
+      if (!res || !res.ok) showToast((res && res.error) || "Could not show that file.");
+    } catch (err) {
+      showToast(String(err));
+    }
+  }
+
+  async function editLineageNode(nodeId) {
+    closeLineageMenus();
+    const creation = await resolveLineageCreation(nodeId);
+    if (!creation) {
+      showToast("Could not open that item in the editor.");
+      return;
+    }
+    const modality = creationModality(creation);
+    if (modality === "image") {
+      void openImageEditor(creation, { standalone: false });
+      return;
+    }
+    if (modality === "video") {
+      void openVideoEditor(creation, { standalone: false });
+      return;
+    }
+    showToast("Edit is available for images and videos.");
+  }
+
+  async function deleteLineageBranch(nodeId) {
+    closeLineageMenus();
+    const component = state.lineageDrawnComponent || { nodes: [], edges: [] };
+    const count = Math.max(1, lineageDescendantCount(nodeId, component));
+    const go = await showConfirm(
+      "Delete branch?",
+      count > 1
+        ? "This deletes this item and all " +
+          (count - 1) +
+          " descendants in this branch (" +
+          count +
+          " items total). This cannot be undone."
+        : "This deletes this item. This cannot be undone.",
+      { yesLabel: "Delete", noLabel: "Cancel", focusNo: true }
+    );
+    if (!go) return;
+    const a = api();
+    if (!a || !a.delete_lineage_branch) return;
+    try {
+      const res = await a.delete_lineage_branch(nodeId);
+      await applyLineageDeletion(res);
+    } catch (err) {
+      showToast(String(err));
+    }
+  }
+
+  async function renameLineageChain(rootId) {
+    closeLineageMenus();
+    const component = ((state.lineageGraphComponents || []).find(
+      (item) => item && item.rootId === rootId
+    )) || state.lineageDrawnComponent;
+    const current = (component && component.rootTitle) || "";
+    const name = await showConfirm(
+      "Rename chain?",
+      "Enter a new name for this generation chain. Embeddings will keep this name.",
+      {
+        yesLabel: "Rename",
+        noLabel: "Cancel",
+        input: { value: current, label: "Chain name" },
+      }
+    );
+    if (name == null) return;
+    const a = api();
+    if (!a || !a.rename_lineage_root) return;
+    try {
+      const res = await a.rename_lineage_root(rootId, String(name));
+      if (!res || !res.ok) {
+        showToast((res && res.error) || "Rename failed.");
+        return;
+      }
+      if (Array.isArray(res.creations)) state.creations = res.creations;
+      if (!state.lineageLabeledIds) state.lineageLabeledIds = {};
+      state.lineageLabeledIds[rootId] = true;
+      state.lineageGraphComponents = null;
+      await renderLineage();
+    } catch (err) {
+      showToast(String(err));
+    }
+  }
+
+  async function deleteLineageChain(rootId) {
+    closeLineageMenus();
+    const component = ((state.lineageGraphComponents || []).find(
+      (item) => item && item.rootId === rootId
+    )) || state.lineageDrawnComponent;
+    const n = ((component && component.nodes) || []).filter(
+      (node) => node && node.kind !== "prompt" && !node.missing
+    ).length;
+    const go = await showConfirm(
+      "Delete chain?",
+      n > 1
+        ? "This deletes the whole chain (" +
+          n +
+          " items). Every node in this graph will be removed. This cannot be undone."
+        : "This deletes this chain. This cannot be undone.",
+      { yesLabel: "Delete", noLabel: "Cancel", focusNo: true }
+    );
+    if (!go) return;
+    const a = api();
+    if (!a || !a.delete_lineage_chain) return;
+    try {
+      const res = await a.delete_lineage_chain(rootId);
+      await applyLineageDeletion(res);
+    } catch (err) {
+      showToast(String(err));
+    }
+  }
+
   async function refreshLineageLabels(components) {
     const a = api();
     if (!a || !a.relabel_lineage_roots) return;
@@ -6740,9 +7207,6 @@
       const labels = (res && res.labels) || {};
       if (!state.lineageLabeledIds) state.lineageLabeledIds = {};
       Object.keys(labels).forEach((id) => {
-        state.lineageLabeledIds[id] = true;
-      });
-      pending.forEach((id) => {
         state.lineageLabeledIds[id] = true;
       });
       if (res && Number(res.updated) > 0) void renderLineage();
@@ -6815,6 +7279,13 @@
         }
       });
       ro.observe(wrap);
+    }
+    const searchEl = $("#lineage-search");
+    if (searchEl && searchEl.dataset.bound !== "1") {
+      searchEl.dataset.bound = "1";
+      searchEl.addEventListener("input", () => {
+        void renderLineage({ refresh: false });
+      });
     }
     const showOrphans = $("#lineage-show-orphans");
     if (showOrphans && showOrphans.dataset.bound !== "1") {
@@ -10603,12 +11074,6 @@
     }
     wireStudioBasisSplitter();
     wireLineagePaneSplitter();
-    if ($("#btn-lineage-open-viewer")) {
-      $("#btn-lineage-open-viewer").addEventListener("click", () => {
-        const creation = state.lineageOpenCreation;
-        if (creation) renderDocument(creation);
-      });
-    }
     const lineageMenu = $("#lineage-node-menu");
     if (lineageMenu) {
       lineageMenu.addEventListener("click", (e) => {
@@ -10619,6 +11084,24 @@
         const action = item.getAttribute("data-action");
         const nodeId = lineageMenu.dataset.nodeId || "";
         if (action === "use-basis") void useLineageNodeAsBasis(nodeId);
+        else if (action === "open-viewer") void openLineageNodeInViewer(nodeId);
+        else if (action === "export") void exportLineageNode(nodeId);
+        else if (action === "show-explorer") void revealLineageNode(nodeId);
+        else if (action === "edit") void editLineageNode(nodeId);
+        else if (action === "delete") void deleteLineageBranch(nodeId);
+      });
+    }
+    const lineageChainMenu = $("#lineage-chain-menu");
+    if (lineageChainMenu) {
+      lineageChainMenu.addEventListener("click", (e) => {
+        const item = e.target.closest("[role='menuitem']");
+        if (!item) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const action = item.getAttribute("data-action");
+        const rootId = lineageChainMenu.dataset.rootId || "";
+        if (action === "rename") void renameLineageChain(rootId);
+        else if (action === "delete") void deleteLineageChain(rootId);
       });
     }
 
@@ -10626,6 +11109,7 @@
       if (
         e.target.closest("#studio-source-menu") ||
         e.target.closest("#lineage-node-menu") ||
+        e.target.closest("#lineage-chain-menu") ||
         e.target.closest(".studio-source-more")
       ) {
         if (e.target.closest(".app-menu-panel [role='menuitem']")) closeAppMenus();
@@ -10649,7 +11133,7 @@
     });
     window.addEventListener("resize", () => {
       closeStudioSourceMenu();
-      closeLineageNodeMenu();
+      closeLineageMenus();
     });
     if ($("#studio-basis-panel")) {
       $("#studio-basis-panel").addEventListener("scroll", () =>

@@ -454,6 +454,65 @@ def expand_prompt_steps(component: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def descendant_creation_ids(
+    creations: Sequence[dict[str, Any]] | None,
+    start_id: str,
+) -> list[str]:
+    """``start_id`` plus every creation that descends from it via ``derivedFrom``.
+
+    Prompt-node ids resolve to the generated child first. Ancestors are not
+    included.
+    """
+    start = str(start_id or "").strip()
+    if is_prompt_node_id(start):
+        child = creation_for_prompt_node(creations, start)
+        start = _creation_id(child)
+    if not start:
+        return []
+    children: dict[str, list[str]] = {}
+    for item in creations or []:
+        cid = _creation_id(item)
+        if not cid:
+            continue
+        for edge in derived_from_edges(item):
+            pid = str(edge.get("id") or "").strip()
+            if not pid or edge.get("role") == "prompt" or is_prompt_node_id(pid):
+                continue
+            children.setdefault(pid, []).append(cid)
+    out: list[str] = []
+    seen: set[str] = set()
+    stack = [start]
+    while stack:
+        cid = stack.pop()
+        if not cid or cid in seen:
+            continue
+        seen.add(cid)
+        out.append(cid)
+        stack.extend(children.get(cid) or [])
+    return out
+
+
+def chain_creation_ids(
+    creations: Sequence[dict[str, Any]] | None, root_id: str
+) -> list[str]:
+    """Every present creation in the connected component that contains ``root_id``."""
+    want = str(root_id or "").strip()
+    if not want:
+        return []
+    for component in connected_components(creations):
+        ids = [
+            _creation_id(n)
+            for n in component.get("nodes") or []
+            if _creation_id(n)
+            and not n.get("missing")
+            and not is_prompt_node_id(_creation_id(n))
+        ]
+        root = str(component.get("rootId") or "")
+        if want == root or want in ids:
+            return ids
+    return [want] if any(_creation_id(c) == want for c in (creations or [])) else []
+
+
 def lineage_root_id(creations: Sequence[dict[str, Any]] | None, creation_id: str) -> str:
     cid = str(creation_id or "").strip()
     if not cid:

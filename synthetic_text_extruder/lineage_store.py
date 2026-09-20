@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -106,6 +107,25 @@ class LineageStore:
                 )
             conn.commit()
         return row
+
+    def delete_for_child_ids(self, child_ids: Sequence[str] | None) -> int:
+        """Drop prompt steps whose generated child was deleted."""
+        ids = [
+            str(item or "").strip()
+            for item in (child_ids or [])
+            if str(item or "").strip()
+        ]
+        if not ids:
+            return 0
+        placeholders = ",".join("?" * len(ids))
+        with self._connect() as conn:
+            cur = conn.execute(
+                f"DELETE FROM prompt_steps WHERE child_id IN ({placeholders}) "
+                f"OR id IN ({placeholders})",
+                ids + ids,
+            )
+            conn.commit()
+            return int(cur.rowcount or 0)
 
     def get_prompt_step(self, node_id: str) -> dict[str, str] | None:
         nid = str(node_id or "").strip()
