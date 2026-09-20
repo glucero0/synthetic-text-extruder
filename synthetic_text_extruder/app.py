@@ -50,7 +50,8 @@ class _AppRequestHandler(SimpleHTTPRequestHandler):
             if self.fallback_media_root is not None:
                 roots.append(self.fallback_media_root)
             denied = str(self.media_root.resolve() / ".__denied__")
-            if not rel or ".." in Path(rel).parts:
+            rel_parts = Path(rel).parts
+            if not rel or ".." in rel_parts or len(rel_parts) > 2:
                 return denied
             for root in roots:
                 root = Path(root).resolve()

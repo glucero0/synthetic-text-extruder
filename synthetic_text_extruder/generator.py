@@ -35,15 +35,12 @@ def generate_creation(
     tool_aliases: list[str] | None = None,
     search_query: str | None = None,
     source_creations: list[dict[str, Any]] | None = None,
+    studio_job: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Dispatch to Gemini and return a creation document."""
     from .cancellation import raise_if_cancelled
     from .gemini_provider import generate_with_gemini
-    from .modality import (
-        infer_layout_extract_intent,
-        infer_prompt_modality,
-        infer_text_extract_intent,
-    )
+    from .modality import infer_prompt_modality
 
     def _cancelled() -> bool:
         return bool(cancel_event is not None and cancel_event.is_set())
@@ -74,15 +71,29 @@ def generate_creation(
             basis_mod = ""
 
     from .modality import resolve_generation_modality
+    from .studio_router import JOB_KINDS, classify_studio_job
 
     prompt_text = creation_description or game
     sources = [s for s in (source_creations or []) if isinstance(s, dict)]
-    from .studio_sources import wants_source_report
+    classified = (
+        studio_job
+        if isinstance(studio_job, dict) and studio_job.get("job") in JOB_KINDS
+        else None
+    )
+    if classified is None:
+        classified = classify_studio_job(
+            prompt_text,
+            sources,
+            config=config,
+            basis_modality=basis_mod or None,
+            layout_basis=bool(basis and basis.get("extracted_layout")),
+            progress=progress,
+            cancel_event=cancel_event,
+        )
+    job = str(classified.get("job") or "")
+    from .collection_jobs import run_collection_job
 
-    report = wants_source_report(prompt_text, sources)
-    from .collection_jobs import run_collection_job, wants_collection_job
-
-    if wants_collection_job(prompt_text, sources):
+    if job == "collection":
         raise_if_cancelled(_cancelled)
         return run_collection_job(
             sources,
@@ -97,7 +108,7 @@ def generate_creation(
             creation_type=creation_type,
         )
 
-    if not report and infer_layout_extract_intent(prompt_text):
+    if job == "layout_extract":
         if not basis or not basis.get("bytes"):
             raise RuntimeError(
                 "Load an image or video as the Studio basis, then ask to extract the layout."
@@ -133,7 +144,7 @@ def generate_creation(
             source=source_kind,
         )
 
-    if not report and infer_text_extract_intent(prompt_text):
+    if job == "text_extract":
         source = basis.get("source_creation") if basis else None
         if not isinstance(source, dict):
             raise RuntimeError(
@@ -154,7 +165,7 @@ def generate_creation(
             cancel_event=cancel_event,
         )
 
-    if report:
+    if job == "report":
         from .studio_sources import gather_then_synthesize
 
         raise_if_cancelled(_cancelled)
@@ -173,11 +184,13 @@ def generate_creation(
 
     # Prompt intent wins (e.g. "generate a video" + image basis → I2V).
     # Ambiguous prompts with a media basis keep the basis modality.
-    forced_modality = resolve_generation_modality(
-        prompt_text,
-        basis_modality=basis_mod or None,
-        layout_basis=bool(basis and basis.get("extracted_layout")),
-    )
+    forced_modality = classified.get("modality")
+    if forced_modality not in {"text", "image", "video", "audio"}:
+        forced_modality = resolve_generation_modality(
+            prompt_text,
+            basis_modality=basis_mod or None,
+            layout_basis=bool(basis and basis.get("extracted_layout")),
+        )
     if basis and basis.get("extracted_layout"):
         from .extract_layout import format_layout_basis_prompt
 

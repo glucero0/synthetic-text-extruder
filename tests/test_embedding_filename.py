@@ -4,11 +4,15 @@ from __future__ import annotations
 
 from synthetic_text_extruder.embedding_filename import (
     candidate_phrases,
+    humanize_lineage_label,
     name_from_phrases,
     slugify_filename,
     suggest_filename_for_creation,
+    suggest_lineage_label,
     suggest_media_filename,
     title_is_prompt_dump,
+    title_is_weak_lineage_name,
+    uniquify_lineage_label,
 )
 
 
@@ -182,3 +186,57 @@ def test_suggest_filename_for_creation_uses_cache():
         suggest_filename_for_creation(creation, propose_fn=boom)
         == "red-fox-snow-dawn"
     )
+
+
+def test_title_is_weak_lineage_name():
+    assert title_is_weak_lineage_name(
+        "ai_generated_preview_42b7f3fe-9a1f-4454-90bd-167bd139ab0d_6751cfdbda7054"
+    )
+    assert title_is_weak_lineage_name("image (1)")
+    assert title_is_weak_lineage_name("IMG_1234.png")
+    assert title_is_weak_lineage_name("Imported from photo.png")
+    assert not title_is_weak_lineage_name("write a sentence about love")
+    assert not title_is_weak_lineage_name("Harbor dusk")
+
+
+def test_humanize_and_uniquify_lineage_label():
+    assert humanize_lineage_label("red-fox-in-snow") == "Red fox in snow"
+    assert uniquify_lineage_label("Harbor dusk", ["Harbor dusk"]) == "Harbor dusk (2)"
+
+
+def test_suggest_lineage_label_keeps_meaningful_title():
+    def boom(**_kwargs):
+        raise AssertionError("should not embed a readable chain title")
+
+    label = suggest_lineage_label(
+        {"title": "write a sentence about love", "prompt": "write a sentence about love"},
+        propose_fn=boom,
+    )
+    assert label == "Write a sentence about love"
+
+
+def test_suggest_lineage_label_uses_media_embedding_for_uuid_title():
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
+
+    def propose(**_kwargs):
+        return ["harbor at dusk", "studio lighting setup"]
+
+    label = suggest_lineage_label(
+        {
+            "title": "ai_generated_preview_42b7f3fe-9a1f-4454-90bd-167bd139ab0d",
+            "prompt": "Imported from preview.png",
+            "modality": "image",
+            "mimeType": "image/png",
+        },
+        taken=["Harbor at dusk"],
+        api_key="unused",
+        content={"modality": "image", "bytes": png, "mime": "image/png", "text": ""},
+        propose_fn=propose,
+        embed_media_fn=lambda **_k: [1.0, 0.0],
+        embed_texts_fn=lambda texts: (
+            [[0.99, 0.0] if "harbor" in str(t).lower() else [0.1, 0.9] for t in texts]
+        ),
+    )
+    assert "Harbor" in label
+    assert label != "Harbor at dusk"
+

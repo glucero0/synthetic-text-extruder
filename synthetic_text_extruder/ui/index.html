@@ -4,8 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Synthetic Text Extruder</title>
-  <link rel="stylesheet" href="styles.css?v=modern20" />
-  <link rel="stylesheet" href="modern.css?v=modern17" />
+  <link rel="stylesheet" href="styles.css?v=modern26" />
+  <link rel="stylesheet" href="modern.css?v=modern18" />
 </head>
 <body>
   <div id="desktop">
@@ -51,6 +51,7 @@
             </div>
             <div class="menu-group" data-screen="viewer">
               <button type="button" id="btn-use-basis" hidden role="menuitem">Use as Basis</button>
+              <button type="button" id="btn-show-lineage" hidden role="menuitem">Show in Lineage</button>
               <button type="button" id="btn-viewer-send-creator" hidden role="menuitem">Save and Send to Creator</button>
               <button type="button" id="btn-voice" hidden role="menuitem">Voice Reader</button>
             </div>
@@ -75,6 +76,7 @@
         <select id="screen-select" aria-label="Switch screen">
           <option value="form">Creation Studio</option>
           <option value="library">Archives</option>
+          <option value="lineage">Lineage</option>
           <option value="viewer">Viewer</option>
           <option value="image-edit">Image Editor</option>
           <option value="video-edit">Video Editor</option>
@@ -88,13 +90,18 @@
       <div class="window app-window" id="win-form" data-window="form">
         <div class="window-body">
           <p class="hint mission-line" id="studio-mission-line">
-            Generate text, images, video, or music with Gemini. Attach mixed
+            Generate text, images, video, or music with Gemini. Studio classifies
+            each CREATE with a project policy prompt (a
+            <strong>report</strong> or <strong>summarize</strong> is a document
+            you can Export PDF — not a new video, even if sources are clips).
+            Attach mixed
             <strong>Sources</strong> (image, video, text, PDF, audio) — or a
             <strong>folder collection</strong> for batch jobs (OCR every scan,
             apply a filter, reconstruct a magazine PDF, make a flipbook). Two or
-            more tray sources still CREATE an illustrated report (prompt
-            <strong>summarize</strong> for a document you can Export PDF — not
-            a new video). One screenshot
+            more tray sources still CREATE an illustrated report, unless the extras
+            are lineage ancestors of the last image or video (Lineage
+            <strong>Use as Basis</strong> loads those so an edit stays an edit).
+            One screenshot
             or clip: prompt <strong>extract the text</strong>,
             <strong>transcribe</strong>, or <strong>extract the layout</strong>.
             Pick models in <strong>Settings</strong>. Review output before you
@@ -172,8 +179,10 @@
                   Menu → Load Files / Folder (or Load Text / Image / Video / PDF)
                   adds attachments to the <strong>Sources</strong> pane — Studio is
                   the hub, so you do not have to pass through the image editor.
-                  With two or more tray sources, CREATE writes a cited illustrated
-                  report (pictures stay in the Viewer; Export PDF includes them).
+                  Studio classifies CREATE (report vs video vs extract vs
+                  collection) from a project policy prompt. With two or more tray
+                  sources, CREATE writes a cited illustrated report (pictures stay
+                  in the Viewer; Export PDF includes them).
                   A large folder becomes one <strong>Collection</strong> — prompt
                   it to OCR every scan, apply a filter, reconstruct a magazine PDF,
                   or make a flipbook. One screenshot or clip still works as a
@@ -254,6 +263,13 @@
       <!-- Archives -->
       <div class="window app-window" id="win-library" data-window="library" hidden>
         <div class="window-body">
+          <p class="hint">
+            Every item is listed here. <strong>Lineage</strong> on a row (or Viewer
+            <strong>Show in Lineage</strong>) opens that item in the Lineage viewer.
+            Click a prompt or a generated file on the graph to inspect it in the
+            right-hand pane. Imports and older items with no recorded prompt stay
+            hidden unless you <strong>Show orphans</strong>.
+          </p>
           <div class="field-row">
             <label for="archive-search">Search</label>
             <input id="archive-search" type="text" />
@@ -277,6 +293,54 @@
               <tbody id="archive-list" class="archive-list"></tbody>
             </table>
           </div>
+        </div>
+      </div>
+
+      <!-- Lineage -->
+      <div class="window app-window" id="win-lineage" data-window="lineage" hidden>
+        <div class="window-body lineage-body">
+          <aside class="lineage-list-wrap">
+            <p class="hint">
+              Each chain is a viewer: original media, then the prompt, then
+              what CREATE (or split / splice / duplicate) produced. Click a
+              node to open it in the pane on the right. Right-click any node
+              and choose <strong>Use as Basis</strong> to add it to Creation
+              Studio with ancestor media from that chain — the next CREATE
+              branches from that node. Imports and
+              older Archive items with no recorded prompt stay hidden.
+            </p>
+            <div class="field-row">
+              <input type="checkbox" id="lineage-show-orphans" />
+              <label for="lineage-show-orphans">Show orphans</label>
+            </div>
+            <ul id="lineage-list" class="lineage-list"></ul>
+          </aside>
+          <div class="lineage-canvas-wrap" id="lineage-canvas-wrap">
+            <svg id="lineage-svg" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Generation lineage"></svg>
+          </div>
+          <div
+            class="lineage-pane-splitter"
+            id="lineage-pane-splitter"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize lineage viewer pane"
+            aria-controls="lineage-viewer-pane"
+            tabindex="0"
+          ></div>
+          <aside class="lineage-viewer-pane" id="lineage-viewer-pane">
+            <header class="lineage-viewer-header">
+              <div>
+                <h2 id="lineage-viewer-title">Select a node</h2>
+                <p class="lineage-viewer-meta" id="lineage-viewer-meta"></p>
+              </div>
+              <button type="button" id="btn-lineage-open-viewer" hidden>Open in Viewer</button>
+            </header>
+            <div class="lineage-viewer-body" id="lineage-viewer-body">
+              <p class="muted">
+                Click a prompt or a generated item on the graph to view it here.
+              </p>
+            </div>
+          </aside>
         </div>
       </div>
 
@@ -414,6 +478,10 @@
                   <div class="field-row-stacked">
                     <label for="system-extra">Extra system instructions</label>
                     <textarea id="system-extra" rows="3" placeholder="Optional custom prompt additions…"></textarea>
+                    <p class="hint">
+                      Appended to generation (style/tone). Does not choose report vs
+                      video vs extract — Studio classifies CREATE from a project policy.
+                    </p>
                   </div>
                   <p class="hint">Settings save when you switch pages or leave Settings.</p>
                 </fieldset>
@@ -487,7 +555,7 @@
                 <fieldset>
                   <legend>Storage</legend>
                   <div class="field-row-stacked">
-                    <label for="media-folder-path">Media folder</label>
+                    <label for="media-folder-path">Library folder</label>
                     <input
                       id="media-folder-path"
                       type="text"
@@ -500,14 +568,34 @@
                     <button type="button" id="btn-reset-media-folder">Use project default</button>
                   </div>
                   <p class="hint" id="media-folder-hint">
-                    Image, video, song, and PDF files go here (PNG, MP4, MP3, PDF).
+                    App-owned copies of generated and imported PNG, MP4, MP3, and PDF
+                    files. Archives and Studio play these files. New items are grouped
+                    by generation chain as <code>media/root-id/doc-id.ext</code>.
                     Text, lyrics, prompts, and metadata stay in
-                    <code>archives.json</code> — you do not need to Export to
-                    keep them. Default is the <code>media</code> folder next
-                    to the app. When you change the folder you can move
-                    existing media files into the new folder; declining leaves
-                    them where they are. Archives still opens items left in
-                    the old project <code>media</code> folder.
+                    <code>archives.json</code>. Full CREATE prompts for the
+                    Lineage viewer are also stored in <code>lineage.sqlite</code>
+                    next to that file. Default is the <code>media</code>
+                    folder next to the app. Changing the folder can offer to move
+                    existing library files.
+                  </p>
+                  <div class="field-row-stacked">
+                    <label for="exports-folder-path">Exports folder</label>
+                    <input
+                      id="exports-folder-path"
+                      type="text"
+                      spellcheck="false"
+                      placeholder="exports"
+                    />
+                  </div>
+                  <div class="form-actions">
+                    <button type="button" id="btn-pick-exports-folder">Browse…</button>
+                    <button type="button" id="btn-reset-exports-folder">Use project default</button>
+                  </div>
+                  <p class="hint" id="exports-folder-hint">
+                    Where Save PNG / MP4 / MP3 / PDF / TXT dialogs open — every
+                    time, not the last folder you saved to. You can still pick
+                    another location for that one file. GENERATE does not write here.
+                    Default is the <code>exports</code> folder next to the app.
                   </p>
                   <p class="hint">
                     Video Editor requires a <strong>current ffmpeg</strong> on PATH
@@ -1043,12 +1131,23 @@
         </button>
         <button type="button" role="menuitem" data-action="remove">Remove</button>
       </div>
+      <div
+        id="lineage-node-menu"
+        class="studio-source-menu"
+        hidden
+        role="menu"
+        aria-label="Lineage node actions"
+      >
+        <button type="button" role="menuitem" data-action="use-basis">
+          Use as Basis
+        </button>
+      </div>
   </div>
 
   <script src="vendor/html-to-image.js"></script>
   <script src="vendor/jspdf.umd.min.js"></script>
   <script src="catalog.js"></script>
   <script src="image_edit.js"></script>
-  <script src="app.js?v=modern23"></script>
+  <script src="app.js?v=modern26"></script>
 </body>
 </html>

@@ -39,4 +39,4 @@ where = ["."]
 include = ["synthetic_text_extruder*"]
 
 [tool.setuptools.package-data]
-synthetic_text_extruder = ["ui/**/*", "data/**/*"]
+synthetic_text_extruder = ["ui/**/*", "data/**/*", "prompts/**/*"]

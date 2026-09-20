@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import threading
-from pathlib import Path
 
 from synthetic_text_extruder.api import Api
 from synthetic_text_extruder.creation_utils import (
@@ -74,6 +73,23 @@ def test_wants_source_report_two_sources_default():
     )
     vid = {"id": "doc_1c9b1302da", "modality": "video", "title": "clip"}
     assert wants_source_report(report_prompt, [img, pdf, vid]) is True
+
+
+def test_wants_source_report_lineage_ancestors_keep_edit():
+    orig = {"id": "doc_orig", "modality": "image", "title": "alley"}
+    edit = {
+        "id": "doc_edit",
+        "modality": "image",
+        "title": "white skin",
+        "derivedFrom": [{"id": "doc_orig", "role": "basis"}],
+    }
+    prompt = "modify so man has white skin, a dirty deformed face"
+    assert wants_source_report(prompt, [orig, edit]) is False
+    assert wants_source_report("write a report", [orig, edit]) is True
+    other = {"id": "other", "modality": "image", "title": "unrelated"}
+    assert wants_source_report(prompt, [orig, other]) is True
+    notes = {"id": "notes", "modality": "pdf"}
+    assert wants_source_report(prompt, [orig, notes, edit]) is True
 
 
 def test_wants_source_report_single_visual_keeps_extract_and_edit():
@@ -172,6 +188,8 @@ def test_safe_original_filename_is_basename_only():
     )
 
     assert safe_original_filename(r"C:\inbox\harbor-notes.pdf") == "harbor-notes.pdf"
+    assert safe_original_filename("C:/inbox/harbor-notes.pdf") == "harbor-notes.pdf"
+    assert safe_original_filename(r"inbox\nested\harbor-notes.pdf") == "harbor-notes.pdf"
     assert safe_original_filename("../etc/passwd") == "passwd"
     assert safe_original_filename("..") == ""
     assert original_filename_for_creation(
@@ -225,7 +243,7 @@ def test_import_source_paths_pdf_and_text(tmp_path, monkeypatch):
     assert pdf["meta"]["originalFilename"] == "spec.pdf"
     notes = next(c for c in res["creations"] if c["modality"] == "text")
     assert notes["meta"]["originalFilename"] == "memo.txt"
-    stored = tmp_path / "media" / Path(pdf["mediaPath"]).name
+    stored = tmp_path / pdf["mediaPath"]
     assert stored.is_file()
 
 
@@ -324,6 +342,10 @@ def test_create_creation_report_job(tmp_path, monkeypatch):
     assert job["status"] == "done", job
     assert (job["result"].get("meta") or {}).get("studioJob") == "report"
     assert "Combined report" in (job["result"]["sections"][0]["content"] or "")
+    derived = job["result"].get("derivedFrom") or []
+    roles = {e["role"] for e in derived}
+    assert "prompt" in roles
+    assert "basis" in roles or "source" in roles
 
 
 _MIN_PNG = b"\x89PNG\r\n\x1a\n" + b"fake-harbor"

@@ -14,6 +14,7 @@ from .creation_utils import (
     build_text_creation_from_plain,
     title_from_prompt,
 )
+from .lineage import attach_derived_from
 from .image_batch import parse_filters_from_prompt, prompt_looks_like_filters
 from .modality import infer_report_intent, infer_text_extract_intent
 from .studio_sources import (
@@ -134,7 +135,7 @@ def build_collection_creation(
         "modalities": sorted(set(mods)),
     }
     creation["meta"] = meta
-    return creation
+    return _stamp_sources(creation, items)
 
 
 def plan_collection_job(prompt: str, *, has_collection: bool = False) -> dict[str, Any]:
@@ -296,6 +297,17 @@ def _emit(
         logger.debug("progress callback failed", exc_info=True)
 
 
+def _stamp_sources(
+    creation: dict[str, Any], sources: list[dict[str, Any]] | None
+) -> dict[str, Any]:
+    edges = [
+        {"id": str(src.get("id") or ""), "role": "source"}
+        for src in sources or []
+        if str((src or {}).get("id") or "").strip()
+    ]
+    return attach_derived_from(creation, edges)
+
+
 def _attach_extras(result: dict[str, Any], extras: list[dict[str, Any]]) -> dict[str, Any]:
     if extras:
         result[ALSO_UPSERT_KEY] = extras
@@ -451,7 +463,7 @@ def _run_filters(
         meta["sourceCreationId"] = str(src.get("id") or "")
         meta["originalFilename"] = original_filename_for_creation(src)
         created["meta"] = meta
-        extras.append(created)
+        extras.append(_stamp_sources(created, [src]))
     if not extras:
         raise RuntimeError("No images could be filtered.")
     wrapper = build_collection_creation(
@@ -462,7 +474,7 @@ def _run_filters(
     wrapper["meta"] = meta
     wrapper["title"] = f"Filtered images ({len(extras)})"
     wrapper["game"] = wrapper["title"]
-    return _attach_extras(wrapper, extras)
+    return _attach_extras(_stamp_sources(wrapper, images), extras)
 
 
 def _run_ocr(
@@ -532,7 +544,7 @@ def _run_ocr(
     meta["extractedText"] = body
     meta["extractionKind"] = "ocr"
     result["meta"] = meta
-    return _attach_extras(result, extras)
+    return _attach_extras(_stamp_sources(result, usable), extras)
 
 
 def _run_magazine(
@@ -676,7 +688,7 @@ def _run_magazine(
     meta["extractionKind"] = "ocr"
     meta["skippedAds"] = skipped
     result["meta"] = meta
-    return result
+    return _stamp_sources(result, images)
 
 
 def _run_flipbook(
@@ -751,7 +763,7 @@ def _run_flipbook(
         vmeta = dict(clip.get("meta") or {})
         vmeta["studioJob"] = "flipbook_video"
         clip["meta"] = vmeta
-        extras.append(clip)
+        extras.append(_stamp_sources(clip, images))
     except Exception as exc:
         from .cancellation import GenerationCancelled
         from .video_edit import FfmpegNotFoundError
@@ -778,7 +790,7 @@ def _run_flipbook(
     }
     result["meta"] = meta
     result["overview"] = f"{len(pages)} pages. Open the Flipbook tab to turn pages."
-    return _attach_extras(result, extras)
+    return _attach_extras(_stamp_sources(result, images), extras)
 
 
 def _run_contact_sheet(
@@ -835,10 +847,10 @@ def _run_contact_sheet(
             title=f"{result['title']} PDF",
             creation_id=pdf_id,
         )
-        extras.append(extra)
+        extras.append(_stamp_sources(extra, images))
     except Exception:
         logger.debug("Contact sheet PDF skipped", exc_info=True)
-    return _attach_extras(result, extras)
+    return _attach_extras(_stamp_sources(result, images), extras)
 
 
 def _run_assemble_pdf(
@@ -877,7 +889,7 @@ def _run_assemble_pdf(
     meta = dict(result.get("meta") or {})
     meta["studioJob"] = "assemble_pdf"
     result["meta"] = meta
-    return result
+    return _stamp_sources(result, images)
 
 
 def _run_generic_map(
@@ -967,4 +979,4 @@ def _run_generic_map(
     meta = dict(result.get("meta") or {})
     meta["studioJob"] = "collection_map"
     result["meta"] = meta
-    return result
+    return _stamp_sources(result, members)

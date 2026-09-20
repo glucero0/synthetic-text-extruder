@@ -6,6 +6,7 @@ import base64
 import mimetypes
 import re
 import shutil
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -54,14 +55,27 @@ MIME_FOR_EXT: dict[str, str] = {
 _TEXT_SUFFIXES = {".txt", ".md", ".markdown", ".csv"}
 
 
-def media_dir(config: dict[str, Any] | None = None) -> Path:
+def _folder_from_paths(config: dict[str, Any] | None, key: str, default: str) -> Path:
     cfg = config if config is not None else load_config()
-    rel = ((cfg.get("paths") or {}).get("media") or "media").strip() or "media"
+    rel = ((cfg.get("paths") or {}).get(key) or default).strip() or default
     path = Path(rel).expanduser()
     if not path.is_absolute():
         path = PROJECT_ROOT / path
     path.mkdir(parents=True, exist_ok=True)
     return path.resolve()
+
+
+def media_dir(config: dict[str, Any] | None = None) -> Path:
+    return _folder_from_paths(config, "media", "media")
+
+
+def exports_dir(config: dict[str, Any] | None = None) -> Path:
+    """Default Save As folder (user-owned copies)."""
+    return _folder_from_paths(config, "exports", "exports")
+
+
+def default_exports_dir() -> Path:
+    return (PROJECT_ROOT / "exports").resolve()
 
 
 def default_media_dir() -> Path:
@@ -90,12 +104,25 @@ def _safe_basename(name: str) -> str | None:
 
 def _join_under_dir(root: Path, name: str) -> Path | None:
     """Rebuild root / basename so the result cannot escape root."""
-    base = _safe_basename(name)
-    if base is None:
+    return _join_rel_under_dir(root, [name])
+
+
+def _join_rel_under_dir(root: Path, parts: Sequence[str]) -> Path | None:
+    """Rebuild root / part / part so the result cannot escape root (max two parts)."""
+    cleaned: list[str] = []
+    for part in parts:
+        base = _safe_basename(str(part))
+        if base is None:
+            return None
+        cleaned.append(base)
+    if not cleaned or len(cleaned) > 2:
         return None
     try:
         parent = root.expanduser().resolve()
-        dest = (parent / base).resolve()
+        dest = parent
+        for base in cleaned:
+            dest = dest / base
+        dest = dest.resolve()
         dest.relative_to(parent)
     except (OSError, ValueError):
         return None
@@ -167,13 +194,40 @@ _SKIP_RELOCATE_NAMES = {
 
 def stored_media_path(dest: Path) -> str:
     """Portable relative path under the project, otherwise absolute."""
-    safe = _join_under_dir(dest.expanduser().parent, dest.name)
-    if safe is None:
+    try:
+        safe = dest.expanduser().resolve()
+    except OSError as exc:
+        raise ValueError("Invalid media path") from exc
+    if safe.name in {".", ".."} or ".." in safe.parts:
         raise ValueError("Invalid media path")
     try:
-        return safe.relative_to(PROJECT_ROOT.resolve()).as_posix()
+        rel = safe.relative_to(PROJECT_ROOT.resolve())
     except ValueError:
         return safe.as_posix()
+    if ".." in rel.parts:
+        raise ValueError("Invalid media path")
+    return rel.as_posix()
+
+
+def lineage_subdir_from_media_path(media_path: str | None) -> str | None:
+    """Return the lineage folder name if mediaPath is ``media/root/file.ext``."""
+    if not media_path:
+        return None
+    raw = Path(str(media_path).strip().replace("\\", "/"))
+    if ".." in raw.parts:
+        return None
+    parts = [p for p in raw.parts if p not in {"/", "\\"}]
+    if raw.anchor:
+        parts = list(raw.parts[1:]) if len(raw.parts) > 1 else []
+    if parts and parts[0].lower() == "media":
+        parts = parts[1:]
+    if len(parts) < 2:
+        return None
+    folder = _safe_basename(parts[0])
+    name = _safe_basename(parts[1])
+    if not folder or not name:
+        return None
+    return folder
 
 
 def unique_media_filename(dest_dir: Path, filename: str) -> str:
@@ -213,8 +267,17 @@ def resolve_path_under_folder(media_path: str | None, folder: Path) -> Path | No
         candidates.append(PROJECT_ROOT / raw)
         if raw.parts and raw.parts[0].lower() == "media":
             candidates.append(root / Path(*raw.parts[1:]))
+        elif len(raw.parts) <= 2 and not raw.is_absolute():
+            candidates.append(root / raw)
         if raw.name:
             candidates.append(root / raw.name)
+            try:
+                if root.is_dir():
+                    for child in root.iterdir():
+                        if child.is_dir() and _safe_basename(child.name):
+                            candidates.append(child / raw.name)
+            except OSError:
+                pass
     seen: set[str] = set()
     for cand in candidates:
         key = str(cand)
@@ -246,19 +309,37 @@ def collect_relocatable_media(
         return []
 
     found: dict[str, Path] = {}
-    for child in source.iterdir():
+
+    def _consider(child: Path) -> None:
         if not child.is_file():
-            continue
+            return
         if child.name.lower() in _SKIP_RELOCATE_NAMES:
-            continue
+            return
         if child.suffix.lower() not in MIME_FOR_EXT:
-            continue
+            return
         try:
             resolved = child.resolve()
             resolved.relative_to(source)
         except (OSError, ValueError):
-            continue
+            return
         found[str(resolved)] = resolved
+
+    try:
+        children = list(source.iterdir())
+    except OSError:
+        children = []
+    for child in children:
+        if child.is_dir():
+            if _safe_basename(child.name) is None:
+                continue
+            try:
+                nested = list(child.iterdir())
+            except OSError:
+                continue
+            for inner in nested:
+                _consider(inner)
+            continue
+        _consider(child)
 
     for creation in creations or []:
         resolved = resolve_path_under_folder(creation.get("mediaPath"), source)
@@ -304,8 +385,23 @@ def relocate_media_to_folder(
             continue
         except ValueError:
             pass
-        new_name = unique_media_filename(dest, src_resolved.name)
-        dest_file = dest / new_name
+        try:
+            rel = src_resolved.relative_to(source)
+        except ValueError:
+            rel = Path(src_resolved.name)
+        if ".." in rel.parts or len(rel.parts) > 2:
+            skipped += 1
+            continue
+        dest_subdir = dest
+        if len(rel.parts) == 2:
+            folder = _safe_basename(rel.parts[0])
+            if folder is None:
+                skipped += 1
+                continue
+            dest_subdir = dest / folder
+            dest_subdir.mkdir(parents=True, exist_ok=True)
+        new_name = unique_media_filename(dest_subdir, src_resolved.name)
+        dest_file = dest_subdir / new_name
         try:
             dest_resolved = dest_file.resolve()
             dest_resolved.relative_to(dest)
@@ -343,15 +439,31 @@ def write_media_bytes(
     mime_type: str,
     config: dict[str, Any] | None = None,
     suffix: str | None = None,
+    lineage_root: str | None = None,
+    nested: bool = True,
 ) -> dict[str, str]:
-    """Write bytes under media/ and return relative mediaPath + mimeType."""
+    """Write bytes under media/ and return relative mediaPath + mimeType.
+
+    New library files go in ``{media}/{lineageRoot}/{creationId}.ext``.
+    Pass ``nested=False`` to overwrite a legacy flat ``media/{id}.ext`` file.
+    """
     if not data:
         raise ValueError("Empty media payload")
     ext = suffix or extension_for_mime(mime_type)
     if not ext.startswith("."):
         ext = "." + ext
     filename = f"{_safe_stem(creation_id)}{ext}"
-    dest = _join_under_dir(media_dir(config), filename)
+    root = media_dir(config)
+    dest: Path | None
+    if nested:
+        folder = _safe_stem(lineage_root or creation_id)
+        dest_dir = _join_rel_under_dir(root, [folder])
+        if dest_dir is None:
+            raise ValueError("Invalid media destination path")
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = _join_rel_under_dir(root, [folder, filename])
+    else:
+        dest = _join_under_dir(root, filename)
     if dest is None:
         raise ValueError("Invalid media destination path")
     dest.write_bytes(data)
@@ -361,32 +473,149 @@ def write_media_bytes(
     }
 
 
+def overwrite_media_bytes(
+    creation: dict[str, Any],
+    data: bytes,
+    *,
+    mime_type: str,
+    config: dict[str, Any] | None = None,
+    suffix: str | None = None,
+) -> dict[str, str]:
+    """Overwrite an existing library file in place, or write a new nested file."""
+    if not data:
+        raise ValueError("Empty media payload")
+    cid = str(creation.get("id") or "").strip() or "media"
+    existing = resolve_media_path(creation.get("mediaPath"), config=config)
+    if existing is not None and existing.is_file():
+        existing.write_bytes(data)
+        return {
+            "mediaPath": str(creation.get("mediaPath") or stored_media_path(existing)),
+            "mimeType": mime_type or mime_for_path(existing),
+        }
+    nested = lineage_subdir_from_media_path(str(creation.get("mediaPath") or ""))
+    return write_media_bytes(
+        cid,
+        data,
+        mime_type=mime_type,
+        config=config,
+        suffix=suffix,
+        lineage_root=nested or cid,
+        nested=True,
+    )
+
+
+def place_library_media(
+    creation: dict[str, Any],
+    lineage_root: str,
+    *,
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Move a library file into ``{media}/{lineageRoot}/{filename}`` if needed."""
+    item = dict(creation or {})
+    path = resolve_media_path(item.get("mediaPath"), config=config)
+    if path is None or not path.is_file():
+        return item
+    folder = _safe_stem(lineage_root or str(item.get("id") or "media"))
+    filename = path.name
+    dest = _join_rel_under_dir(media_dir(config), [folder, filename])
+    if dest is None:
+        return item
+    try:
+        if path.resolve() == dest.resolve():
+            item["mediaPath"] = stored_media_path(dest)
+            return item
+    except OSError:
+        return item
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.exists():
+        item["mediaPath"] = stored_media_path(dest)
+        return item
+    try:
+        shutil.move(str(path), str(dest))
+    except OSError:
+        return item
+    old_parent = path.parent
+    try:
+        if old_parent.is_dir() and not any(old_parent.iterdir()):
+            old_parent.rmdir()
+    except OSError:
+        pass
+    item["mediaPath"] = stored_media_path(dest)
+    return item
+
+
+def media_http_relpath(path: Path, config: dict[str, Any] | None = None) -> str:
+    """Path under /media/ for the local HTTP server (posix, no leading slash)."""
+    try:
+        resolved = path.expanduser().resolve()
+    except OSError:
+        return path.name
+    for root in media_read_roots(config):
+        try:
+            rel = resolved.relative_to(Path(root).expanduser().resolve())
+        except (OSError, ValueError):
+            continue
+        if ".." in rel.parts or not rel.parts or len(rel.parts) > 2:
+            continue
+        cleaned = [_safe_basename(p) for p in rel.parts]
+        if any(p is None for p in cleaned):
+            continue
+        return "/".join(cleaned)  # type: ignore[arg-type]
+    return path.name
+
+
+def _find_basename_in_roots(name: str, roots: list[Path]) -> Path | None:
+    base = _safe_basename(name)
+    if base is None:
+        return None
+    for root in roots:
+        dest = _join_under_dir(root, base)
+        if dest is not None and dest.is_file():
+            return dest
+        try:
+            if not root.is_dir():
+                continue
+            for child in root.iterdir():
+                if not child.is_dir() or _safe_basename(child.name) is None:
+                    continue
+                dest = _join_rel_under_dir(root, [child.name, base])
+                if dest is not None and dest.is_file():
+                    return dest
+        except OSError:
+            continue
+    return None
+
+
 def resolve_media_path(media_path: str | None, config: dict[str, Any] | None = None) -> Path | None:
     if not media_path:
         return None
     raw = Path(str(media_path).strip())
-    current = media_dir(config)
+    if ".." in raw.parts:
+        return None
     roots = media_read_roots(config)
-    candidates: list[Path] = []
-    if raw.is_absolute():
-        candidates.append(raw)
-    else:
-        candidates.append(PROJECT_ROOT / raw)
-        if raw.parts and raw.parts[0].lower() == "media":
-            candidates.append(current / Path(*raw.parts[1:]))
-    if raw.name:
+    rel_parts: list[str] = []
+    parts = list(raw.parts)
+    if parts and parts[0].lower() == "media":
+        rel_parts = parts[1:]
+    elif not raw.is_absolute():
+        rel_parts = parts
+    if len(rel_parts) in {1, 2} and all(_safe_basename(p) for p in rel_parts):
         for root in roots:
-            candidates.append(root / raw.name)
+            dest = _join_rel_under_dir(root, rel_parts)
+            if dest is not None and dest.is_file():
+                return dest
+        dest = _join_rel_under_dir(PROJECT_ROOT / "media", rel_parts) if rel_parts else None
+        if dest is not None and dest.is_file():
+            try:
+                dest.relative_to((PROJECT_ROOT / "media").resolve())
+                return dest
+            except (OSError, ValueError):
+                pass
 
-    seen: set[str] = set()
-    for cand in candidates:
-        key = str(cand)
-        if key in seen:
-            continue
-        seen.add(key)
-        found = _resolve_within_roots(cand, roots, must_exist=True)
-        if found:
-            return found
+    found = _find_basename_in_roots(raw.name, roots)
+    if found:
+        return found
+
     # Trusted Archive absolute path (previous custom folder) still on disk.
     if raw.is_absolute():
         try:

@@ -281,6 +281,8 @@ def test_write_media_bytes_to_custom_absolute_folder(tmp_path):
     stored = write_media_bytes(
         "doc_y", b"\x89PNG", mime_type="image/png", config=cfg
     )
-    dest = custom / Path(stored["mediaPath"]).name
+    dest = Path(stored["mediaPath"])
     assert dest.is_file()
     assert dest.read_bytes() == b"\x89PNG"
+    assert dest.parent.name == "doc_y"
+    assert dest.name == "doc_y.png"
