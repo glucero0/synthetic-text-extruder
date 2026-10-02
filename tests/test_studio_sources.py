@@ -232,17 +232,21 @@ def test_import_source_paths_pdf_and_text(tmp_path, monkeypatch):
     (tmp_path / "media").mkdir(parents=True, exist_ok=True)
     text_path = tmp_path / "memo.txt"
     text_path.write_text("Memo body", encoding="utf-8")
+    py_path = tmp_path / "script.py"
+    py_path.write_text("print('hello')", encoding="utf-8")
     pdf_path = tmp_path / "spec.pdf"
     pdf_path.write_bytes(b"%PDF-1.4 fake")
-    res = api._import_source_paths([text_path, pdf_path], already=0)
+    res = api._import_source_paths([text_path, py_path, pdf_path], already=0)
     assert res["ok"] is True
     mods = {c["modality"] for c in res["creations"]}
     assert mods == {"text", "pdf"}
     pdf = next(c for c in res["creations"] if c["modality"] == "pdf")
     assert pdf["mimeType"] == "application/pdf"
     assert pdf["meta"]["originalFilename"] == "spec.pdf"
-    notes = next(c for c in res["creations"] if c["modality"] == "text")
-    assert notes["meta"]["originalFilename"] == "memo.txt"
+    notes = next(c for c in res["creations"] if c["meta"]["originalFilename"] == "memo.txt")
+    script = next(c for c in res["creations"] if c["meta"]["originalFilename"] == "script.py")
+    assert notes["modality"] == "text"
+    assert script["modality"] == "text"
     stored = tmp_path / pdf["mediaPath"]
     assert stored.is_file()
 

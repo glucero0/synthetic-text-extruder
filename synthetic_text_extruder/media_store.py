@@ -52,7 +52,11 @@ MIME_FOR_EXT: dict[str, str] = {
     ".pdf": "application/pdf",
 }
 
-_TEXT_SUFFIXES = {".txt", ".md", ".markdown", ".csv"}
+_BINARY_EXECUTABLE_SUFFIXES = {
+    ".exe", ".dll", ".so", ".dylib", ".bin", ".msi", ".sys", ".com", 
+    ".pif", ".scr", ".cpl", ".iso", ".img", ".dmg", 
+    ".tar", ".gz", ".zip", ".rar", ".7z", ".cab", ".xz", ".bz2",
+}
 
 
 def _folder_from_paths(config: dict[str, Any] | None, key: str, default: str) -> Path:
@@ -170,8 +174,9 @@ def mime_for_path(path: Path) -> str:
 def modality_for_path(path: Path) -> str | None:
     """Viewer/import type for a user-chosen file, or None if unsupported."""
     suffix = Path(path).suffix.lower()
-    if suffix in _TEXT_SUFFIXES:
-        return "text"
+    if suffix in _BINARY_EXECUTABLE_SUFFIXES:
+        return None
+    
     mime = str(mime_for_path(path) or "").split(";", 1)[0].strip().lower()
     if mime.startswith("image/"):
         return "image"
@@ -181,7 +186,9 @@ def modality_for_path(path: Path) -> str | None:
         return "audio"
     if mime == "application/pdf" or suffix == ".pdf":
         return "pdf"
-    return None
+        
+    # Default everything else (code, config, scripts, text) to text mode
+    return "text"
 
 
 _SKIP_RELOCATE_NAMES = {

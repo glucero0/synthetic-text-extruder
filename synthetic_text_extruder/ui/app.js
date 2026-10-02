@@ -7509,6 +7509,15 @@
             ? "Export Extracted TXT"
             : "Export TXT";
     }
+    if ($("#btn-export-md")) {
+      $("#btn-export-md").hidden = !showTxt;
+      $("#btn-export-md").textContent =
+        modality === "audio" && lyrics
+          ? "Export Lyrics MD"
+          : isMedia && extracted
+            ? "Export Extracted MD"
+            : "Export MD";
+    }
     if ($("#btn-export-png")) {
       $("#btn-export-png").hidden = !showPng;
       $("#btn-export-png").textContent = exportLayout
@@ -11390,6 +11399,50 @@
         endBusy("Ready");
       }
     });
+
+    if ($("#btn-export-md")) {
+      $("#btn-export-md").addEventListener("click", async () => {
+        if (!state.active) return;
+        const modality = creationModality(state.active);
+        const extracted = getExtractedText(state.active);
+        if (modality !== "text" && !extracted && !(modality === "audio" && creationLyrics(state.active))) {
+          showToast(
+            "Prompt Studio to extract the text or transcribe first, or open a text creation."
+          );
+          return;
+        }
+        const a = api();
+        if (!a || typeof a.export_creation_md !== "function") {
+          showToast("MD export is not available in this version.");
+          return;
+        }
+        try {
+          beginBusy("Save", "Choosing a filename…", { delayMs: 0 });
+          const md = await a.export_creation_md(state.active);
+          const suffix =
+            modality === "video"
+              ? "_transcript.md"
+              : modality === "image"
+                ? "_ocr.md"
+                : modality === "audio"
+                  ? "_lyrics.md"
+                  : ".md";
+          let stem = exportBaseName(state.active);
+          try {
+            stem = await mediaSaveBaseName(state.active);
+          } catch (_) {
+            /* keep prompt slug */
+          }
+          const name =
+            modality === "text" ? stem + ".md" : stem + suffix;
+          await a.save_file_dialog(name, md);
+        } catch (err) {
+          showToast(String(err));
+        } finally {
+          endBusy("Ready");
+        }
+      });
+    }
 
     const docCanvas = $("#doc-canvas");
     if (docCanvas) {
