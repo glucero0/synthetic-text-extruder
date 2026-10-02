@@ -83,6 +83,8 @@ def test_export_creation_txt_uses_extracted_for_media(tmp_path, monkeypatch):
     )
     with pytest.raises(RuntimeError, match="extract the text"):
         api.export_creation_txt(creation)
+    with pytest.raises(RuntimeError, match="extract the text"):
+        api.export_creation_md(creation)
 
     creation = apply_extraction_fields(
         creation,
@@ -93,6 +95,9 @@ def test_export_creation_txt_uses_extracted_for_media(tmp_path, monkeypatch):
     )
     out = api.export_creation_txt(creation)
     assert "HELLO WORLD" in out
+    
+    out_md = api.export_creation_md(creation)
+    assert "HELLO WORLD" in out_md
 
 
 def test_replace_creation_media_clears_extracted_text(tmp_path, monkeypatch):

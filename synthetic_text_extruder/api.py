@@ -80,6 +80,51 @@ def _ensure_save_suffix(path: Path, suffix: str) -> Path:
     return path
 
 
+def _normalize_open_dialog_paths(result: Any) -> list[Path]:
+    """
+    Handle single string, NUL-separated string (Windows multi-select), or sequence of paths.
+    Returns a deduplicated list of existing Path objects.
+    """
+    if not result:
+        return []
+    
+    raw_paths: list[str] = []
+    if isinstance(result, str):
+        if "\0" in result:
+            # WinForms/Edge fallback on pywebview < 6.2.1 multi-select
+            parts = result.split("\0")
+            if len(parts) > 1 and Path(parts[0]).is_dir():
+                # Directory followed by filenames
+                directory = parts[0]
+                for filename in parts[1:]:
+                    raw_paths.append(str(Path(directory) / filename))
+            else:
+                raw_paths.extend(parts)
+        else:
+            raw_paths.append(result)
+    elif isinstance(result, (list, tuple)):
+        for item in result:
+            if isinstance(item, str) and "\0" in item:
+                raw_paths.extend(item.split("\0"))
+            elif item:
+                raw_paths.append(str(item))
+
+    out: list[Path] = []
+    seen: set[str] = set()
+    for raw in raw_paths:
+        r = raw.strip()
+        if not r:
+            continue
+        try:
+            p = Path(r).expanduser().resolve()
+            if str(p) not in seen and p.is_file():
+                seen.add(str(p))
+                out.append(p)
+        except OSError:
+            pass
+    return out
+
+
 def _safe_dialog_save_path(dialog_result: Any, suffix: str) -> Path:
     """Rebuild a save-dialog path from resolved parent + sanitized filename.
 
@@ -1401,8 +1446,56 @@ class Api:
         except Exception:  # noqa: BLE001
             logger.debug("evaluate_js failed (UI should poll get_job)", exc_info=True)
 
+    def export_creation_md(self, creation: dict[str, Any]) -> str:
+        """Export the generated text body as Markdown."""
+        from .extract_text import get_extracted_text
+
+        modality = str((creation or {}).get("modality") or "text").lower()
+        if modality in {"image", "video"}:
+            extracted = get_extracted_text(creation)
+            if extracted:
+                return extracted + ("\n" if not extracted.endswith("\n") else "")
+            raise RuntimeError(
+                f"MD export is not available for {modality} creations until you extract the text in Creation Studio."
+            )
+
+        lines: list[str] = []
+        overview = str(creation.get("overview") or "").strip()
+        sections = creation.get("sections") or []
+        skip_overview = False
+        if overview and sections:
+            body = str((sections[0] or {}).get("content") or "").strip()
+            clipped = overview.rstrip("…").rstrip(".").strip()
+            if body.startswith(clipped) or (
+                str(creation.get("creationType") or "") == "Text" and body
+            ):
+                skip_overview = True
+        
+        # If there's an original prompt/title we could add it as an H1, but matching TXT logic:
+        title = str(creation.get("title") or "").strip()
+        if title:
+            lines.append(f"# {title}")
+            lines.append("")
+
+        if overview and not skip_overview:
+            lines.append(overview)
+            lines.append("")
+            
+        for section in sections:
+            sec_title = str((section or {}).get("title") or "").strip()
+            hide_title = (not sec_title) or (sec_title.casefold() == "response")
+            if not hide_title:
+                lines.append(f"## {sec_title}")
+                lines.append("")
+            content = str((section or {}).get("content") or "")
+            if content:
+                lines.append(content)
+            for kv in (section or {}).get("keyValues") or []:
+                lines.append(f"- **{kv.get('label', '')}**: {kv.get('value', '')}")
+            lines.append("")
+        return "\n".join(lines).strip() + ("\n" if lines else "")
+
     def export_creation_txt(self, creation: dict[str, Any]) -> str:
-        """Export only the generated text body (no prompt or metadata)."""
         from .extract_text import get_extracted_text
 
         modality = str((creation or {}).get("modality") or "text").lower()
@@ -2298,13 +2391,11 @@ class Api:
         )
         if not result:
             return {"ok": False, "cancelled": True}
-        if isinstance(result, (list, tuple)):
-            paths = [Path(p) for p in result if str(p).strip()]
-        else:
-            paths = [Path(result)]
-        files = [p for p in paths if p.is_file()]
+            
+        files = _normalize_open_dialog_paths(result)
         if not files:
-            return {"ok": False, "error": "File not found"}
+            logger.debug(f"Open dialog returned {result!r} but no valid files were resolved.")
+            return {"ok": False, "error": "No files selected or paths could not be read"}
         return {"ok": True, "paths": files}
 
     def _dialog_open_path(self, file_types: tuple[str, ...]) -> dict[str, Any]:
@@ -2537,15 +2628,12 @@ class Api:
         """Multi-select mixed files (text, image, video, audio, PDF) as Studio sources."""
         picked = self._dialog_open_paths(
             (
-                "All supported (*.txt;*.md;*.markdown;*.csv;*.png;*.jpg;*.jpeg;"
-                "*.webp;*.gif;*.bmp;*.mp4;*.webm;*.mov;*.mkv;*.avi;*.mp3;*.wav;"
-                "*.ogg;*.m4a;*.aac;*.pdf)",
-                "Text Files (*.txt;*.md;*.markdown;*.csv)",
+                "All Files (*.*)",
+                "Text and Code Files (*.txt;*.md;*.json;*.py;*.js;*.ts;*.html;*.css;*.csv)",
                 "Image Files (*.png;*.jpg;*.jpeg;*.webp;*.gif;*.bmp)",
                 "Video Files (*.mp4;*.webm;*.mov;*.mkv;*.avi)",
                 "Audio Files (*.mp3;*.wav;*.ogg;*.m4a;*.aac)",
                 "PDF Files (*.pdf)",
-                "All Files (*.*)",
             ),
             allow_multiple=True,
         )
@@ -2589,15 +2677,12 @@ class Api:
 
         picked = self._dialog_open_path(
             (
-                "All supported (*.txt;*.md;*.markdown;*.csv;*.png;*.jpg;*.jpeg;"
-                "*.webp;*.gif;*.bmp;*.mp4;*.webm;*.mov;*.mkv;*.avi;*.mp3;*.wav;"
-                "*.ogg;*.m4a;*.aac;*.pdf)",
-                "Text Files (*.txt;*.md;*.markdown;*.csv)",
+                "All Files (*.*)",
+                "Text and Code Files (*.txt;*.md;*.json;*.py;*.js;*.ts;*.html;*.css;*.csv)",
                 "Image Files (*.png;*.jpg;*.jpeg;*.webp;*.gif;*.bmp)",
                 "Video Files (*.mp4;*.webm;*.mov;*.mkv;*.avi)",
                 "Audio Files (*.mp3;*.wav;*.ogg;*.m4a;*.aac)",
                 "PDF Files (*.pdf)",
-                "All Files (*.*)",
             )
         )
         if not picked.get("ok"):
@@ -2607,7 +2692,7 @@ class Api:
         if not mod:
             return {
                 "ok": False,
-                "error": "Viewer can open text, images, video, audio, or PDF.",
+                "error": "File type not supported (executables/binaries are rejected).",
             }
         if mod == "text":
             return self._import_text_from_path(path, save_to_archives=True)

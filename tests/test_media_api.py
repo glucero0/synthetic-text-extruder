@@ -8,9 +8,40 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from synthetic_text_extruder.api import Api, _safe_dialog_save_path
+from synthetic_text_extruder.api import Api, _safe_dialog_save_path, _normalize_open_dialog_paths
 from synthetic_text_extruder.creation_utils import build_media_creation
 from synthetic_text_extruder.storage import ArchiveStore
+
+
+def test_normalize_open_dialog_paths_multi_select(tmp_path):
+    f1 = tmp_path / "f1.txt"
+    f2 = tmp_path / "f2.txt"
+    f1.write_text("1")
+    f2.write_text("2")
+    
+    paths = _normalize_open_dialog_paths((str(f1), str(f2)))
+    assert len(paths) == 2
+    assert f1.resolve() in paths
+    assert f2.resolve() in paths
+    
+    win32_res = "\0".join([str(tmp_path), "f1.txt", "f2.txt"])
+    paths2 = _normalize_open_dialog_paths(win32_res)
+    assert len(paths2) == 2
+    assert f1.resolve() in paths2
+    assert f2.resolve() in paths2
+    
+    paths3 = _normalize_open_dialog_paths(str(f1))
+    assert len(paths3) == 1
+    assert paths3[0] == f1.resolve()
+
+
+def test_normalize_open_dialog_paths_ignores_missing(tmp_path):
+    f1 = tmp_path / "f1.txt"
+    f1.write_text("1")
+    paths = _normalize_open_dialog_paths((str(f1), str(tmp_path / "missing.txt")))
+    assert len(paths) == 1
+    assert paths[0] == f1.resolve()
+
 
 
 def _api_with_tmp_store(tmp_path, monkeypatch) -> Api:
@@ -227,6 +258,9 @@ def test_modality_for_path_detects_supported_types(tmp_path):
 
     assert modality_for_path(tmp_path / "notes.txt") == "text"
     assert modality_for_path(tmp_path / "readme.markdown") == "text"
+    assert modality_for_path(tmp_path / "script.py") == "text"
+    assert modality_for_path(tmp_path / "config.json") == "text"
+    assert modality_for_path(tmp_path / "run.bat") == "text"
     assert modality_for_path(tmp_path / "shot.png") == "image"
     assert modality_for_path(tmp_path / "clip.mp4") == "video"
     assert modality_for_path(tmp_path / "song.mp3") == "audio"
@@ -282,14 +316,14 @@ def test_open_viewer_file_pdf(tmp_path, monkeypatch):
 def test_open_viewer_file_rejects_unsupported(tmp_path, monkeypatch):
     api = _api_with_tmp_store(tmp_path, monkeypatch)
     src = tmp_path / "payload.exe"
-    src.write_bytes(b"%PDF-1.4")
+    src.write_bytes(b"MZ")
     win = MagicMock()
     win.create_file_dialog.return_value = str(src)
     api._window = win
 
     res = api.open_viewer_file()
     assert res["ok"] is False
-    assert "text" in (res.get("error") or "").lower()
+    assert "not supported" in (res.get("error") or "").lower()
 
 
 def test_open_viewer_file_cancelled(tmp_path, monkeypatch):
