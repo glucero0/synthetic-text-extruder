@@ -341,6 +341,16 @@ def run_collection_job(
         raise RuntimeError("This collection has no readable files.")
     plan = plan_collection_job(prompt, has_collection=has_col)
     kind = str(plan.get("kind") or "generic_map")
+    
+    # If the job needs visuals but none exist, gracefully fall back to a text report.
+    if kind in {"magazine", "flipbook", "contact_sheet", "filters", "assemble_pdf"}:
+        visuals = [
+            m for m in members if creation_source_modality(m) in {"image", "video", "pdf", "audio"}
+        ]
+        images = _image_members(members)
+        if not (len(images) >= 1 or len(visuals) >= 2):
+            kind = "report"
+
     n = len(members)
     _emit(
         progress,

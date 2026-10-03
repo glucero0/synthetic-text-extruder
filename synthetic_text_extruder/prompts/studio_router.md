@@ -23,7 +23,7 @@ Return a single JSON object:
 
 ## Priority (first match wins)
 
-1. **Collection chip present** — classify the prompt as a collection job (`ocr`, `filters`, `magazine`, `flipbook`, `contact_sheet`, `assemble_pdf`, `report`, or `generic_map` for any other per-file instruction). Empty prompt + collection → `generic_map`.
+1. **Collection chip present** — classify the prompt as a collection job (`ocr`, `filters`, `magazine`, `flipbook`, `contact_sheet`, `assemble_pdf`, `report`, or `generic_map` for any other per-file instruction). Empty prompt + collection → `generic_map`. If the user asks to create a PDF/flipbook/magazine from text/code, use `collectionKind: report` (visual formats require images).
 2. **Report** — `create` / `write` / `make` / `draft` / `compose` / `build` / `prepare` a **report**, or **summarize** / **recap** / **rundown**, is an illustrated **document** (Viewer type Report; **Export PDF / PNG / TXT**). This wins even when sources are video clips, the prompt quotes `.mp4` filenames, or the words “video”, “image”, or “clip” appear as things to summarize. Do **not** choose `video`.
 3. **Summarize into media** — `summarize into a video`, `create a video summarizing…`, or `summarize as an image/song` is that media job, not a report.
 4. **Extract** — `extract the text` / OCR, `transcribe`, or `extract the layout` on an image or clip is extract (`text_extract` or `layout_extract`), not a mixed-source report. Quoting a filename still means extract that file.
