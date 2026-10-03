@@ -127,6 +127,15 @@
       "expected": {"job": "collection", "collectionKind": "report", "modality": "text"}
     },
     {
+      "id": "collection-pdf-from-text",
+      "prompt": "create a pdf",
+      "sources": [
+        {"id": "col", "modality": "text", "title": "Code files (5 files)", "isCollection": true}
+      ],
+      "expected": {"job": "collection", "collectionKind": "report", "modality": "text"},
+      "fallback": {"job": "collection", "collectionKind": "assemble_pdf", "modality": "text"}
+    },
+    {
       "id": "tray-report-not-collection",
       "prompt": "write a report",
       "sources": [
