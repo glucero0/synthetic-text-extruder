@@ -6,13 +6,13 @@ anyio==4.15.1
 bottle==0.13.4
 certifi==2026.10.19
 cffi==2.1.1
-charset-normalizer==3.5.1
+charset-normalizer==3.5.2
 clr_loader==0.3.1; sys_platform == "win32"
 colorama==0.4.6
 cryptography==50.0.2
 distro==1.9.0
 google-auth==2.59.1
-google-auth-oauthlib==1.4.1
+google-auth-oauthlib==1.5.0
 google-genai==2.23.0
 google-api-core==2.40.0
 google-api-python-client==2.199.0
