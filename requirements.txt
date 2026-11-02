@@ -37,8 +37,8 @@ proxy_tools==0.1.0
 pyasn1==0.6.5
 pyasn1_modules==0.4.2
 pycparser==3.0
-pydantic==2.14.1
-pydantic_core==2.50.1
+pydantic==2.14.2
+pydantic_core==2.50.2
 Pygments==2.21.0
 pytest==9.1.1
 reportlab==5.0.1
