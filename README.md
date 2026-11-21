@@ -23,7 +23,7 @@ A single-window studio for general-purpose AI creation: **text**, **images**, **
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.11+
 - A [Gemini API key](https://aistudio.google.com/apikey), set via **Settings** (saved to `config.yaml`)
 - **ffmpeg + ffprobe** — needed for **Video Editor** (apply filters, split/reorder segments, export), to transcribe a video basis in Studio (pulls the audio track), and to extract layout from a video basis (grabs a still frame). See [Installing ffmpeg](#installing-ffmpeg) below.
 
