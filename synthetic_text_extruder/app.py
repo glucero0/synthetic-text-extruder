@@ -169,7 +169,10 @@ def main() -> int:
         import webview
     except ImportError:
         print(
-            "pywebview is required. Install with: pip install -r requirements.txt",
+            f"pywebview is not installed in {sys.executable}.\n"
+            "Install dependencies into this Python environment with:\n"
+            f'  "{sys.executable}" -m pip install -r requirements.txt\n'
+            "Or activate your project virtual environment (.venv) first.",
             file=sys.stderr,
         )
         return 1

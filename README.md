@@ -36,10 +36,12 @@ python -m venv .venv
 # macOS / Linux
 source .venv/bin/activate
 
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 
 python -m synthetic_text_extruder
 ```
+
+> **Windows tip (multiple Python / Conda / Miniforge installs):** Always activate `.venv` first (or create it with a specific interpreter such as `py -3.11 -m venv .venv`) and run `python -m pip install -r requirements.txt` rather than bare `pip install`. Otherwise `pip` and `python` can point to different Python installations, causing `python -m synthetic_text_extruder` to report missing packages even right after installing.
 
 Then open **Settings** → **Models** (or **Google**) → paste your Gemini API key → **Save API key**. Pick a **Text**, **Image**, **Video**, and/or **Audio (Lyria)** model. Other settings save when you switch Settings pages or leave Settings via the screen dropdown. Enable Lyria (and Lyria Pro / 3.5 if you want full-length songs) for that API key in [Google AI Studio](https://aistudio.google.com/) or the linked Cloud project if the Audio picker is empty after **Refresh…**.
 

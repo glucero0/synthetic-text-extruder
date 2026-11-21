@@ -15,7 +15,7 @@ def _require_reportlab() -> None:
         import reportlab  # noqa: F401
     except ImportError as exc:
         raise RuntimeError(
-            "reportlab is required to write PDFs. Run: pip install reportlab"
+            "reportlab is required to write PDFs. Run: python -m pip install reportlab"
         ) from exc
 
 
@@ -199,7 +199,7 @@ def contact_sheet_png(
         from PIL import Image
     except ImportError as exc:
         raise RuntimeError(
-            "Pillow is required for contact sheets. Run: pip install pillow"
+            "Pillow is required for contact sheets. Run: python -m pip install pillow"
         ) from exc
     paths = [Path(p) for p in image_paths if p and Path(p).is_file()]
     if not paths:

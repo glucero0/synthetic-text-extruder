@@ -50,3 +50,42 @@ def test_enrich_research_with_youtube_captions_appends_block():
     assert "YOUTUBE CAPTION FINDINGS" in block
     assert "Press R1 to sprint." in block
     assert meta["youtubeCaptionCount"] == 1
+
+
+def test_fetch_captions_supports_v1_fetch_api(monkeypatch):
+    import sys
+    import types
+
+    from synthetic_text_extruder.research_youtube import _fetch_captions
+
+    class _Snippet:
+        def __init__(self, text: str):
+            self.text = text
+
+    class _ApiV1:
+        def fetch(self, video_id: str, languages=None):
+            assert video_id == "abc123XYZ12"
+            return [_Snippet("Line one"), _Snippet("Line two")]
+
+    fake_mod = types.ModuleType("youtube_transcript_api")
+    fake_mod.YouTubeTranscriptApi = _ApiV1
+    monkeypatch.setitem(sys.modules, "youtube_transcript_api", fake_mod)
+    assert _fetch_captions("abc123XYZ12") == "Line one\nLine two"
+
+
+def test_fetch_captions_supports_legacy_get_transcript_api(monkeypatch):
+    import sys
+    import types
+
+    from synthetic_text_extruder.research_youtube import _fetch_captions
+
+    class _ApiV0:
+        @staticmethod
+        def get_transcript(video_id: str, languages=None):
+            assert video_id == "abc123XYZ12"
+            return [{"text": "Legacy line"}]
+
+    fake_mod = types.ModuleType("youtube_transcript_api")
+    fake_mod.YouTubeTranscriptApi = _ApiV0
+    monkeypatch.setitem(sys.modules, "youtube_transcript_api", fake_mod)
+    assert _fetch_captions("abc123XYZ12") == "Legacy line"

@@ -346,7 +346,7 @@ def _gemini_multimodal(
         from google.genai import types
     except ImportError as exc:
         raise RuntimeError(
-            "google-genai is not installed. Run:\n  pip install google-genai"
+            "google-genai is not installed. Run:\n  python -m pip install google-genai"
         ) from exc
 
     _emit(progress, f"Contacting Gemini ({model_name})…", percent=55)
@@ -416,7 +416,7 @@ def gemini_text_prompt(
         from google.genai import types
     except ImportError as exc:
         raise RuntimeError(
-            "google-genai is not installed. Run:\n  pip install google-genai"
+            "google-genai is not installed. Run:\n  python -m pip install google-genai"
         ) from exc
     _emit(progress, f"Contacting Gemini ({model_name})…", percent=55)
     client = genai.Client(api_key=api_key)

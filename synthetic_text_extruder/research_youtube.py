@@ -93,14 +93,22 @@ def _fetch_captions(video_id: str) -> str:
     except ImportError as exc:
         raise RuntimeError(
             "youtube-transcript-api is not installed. Run:\n"
-            "  pip install youtube-transcript-api"
+            "  python -m pip install youtube-transcript-api"
         ) from exc
 
     parts = None
-    for getter in (
-        lambda: YouTubeTranscriptApi.get_transcript(video_id, languages=["en"]),
-        lambda: YouTubeTranscriptApi.get_transcript(video_id),
-    ):
+    if hasattr(YouTubeTranscriptApi, "fetch"):
+        api = YouTubeTranscriptApi()
+        getters = (
+            lambda: api.fetch(video_id, languages=["en"]),
+            lambda: next(iter(api.list(video_id))).fetch(),
+        )
+    else:
+        getters = (
+            lambda: YouTubeTranscriptApi.get_transcript(video_id, languages=["en"]),
+            lambda: YouTubeTranscriptApi.get_transcript(video_id),
+        )
+    for getter in getters:
         try:
             parts = getter()
             break
@@ -109,7 +117,13 @@ def _fetch_captions(video_id: str) -> str:
     if not parts:
         raise RuntimeError("no usable captions found")
 
-    lines = [str(item.get("text") or "").strip() for item in parts]
+    lines = [
+        str(
+            (item.get("text") if isinstance(item, dict) else getattr(item, "text", ""))
+            or ""
+        ).strip()
+        for item in parts
+    ]
     text = "\n".join(line for line in lines if line).strip()
     if not text:
         raise RuntimeError("captions were empty")

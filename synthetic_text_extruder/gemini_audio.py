@@ -79,7 +79,7 @@ def lyria_user_error(exc: BaseException | str, *, model_name: str = "") -> str:
             f"Lyria rejected this request format ({mid}). "
             "The music API did not accept the app’s audio output settings. "
             "Try Settings → Refresh the Audio picker, or "
-            "pip install -U google-genai, then retry."
+            "python -m pip install -U google-genai, then retry."
         )
     if is_lyria_policy_block(exc):
         return (
@@ -258,7 +258,7 @@ def generate_audio_with_gemini(
         from google import genai
     except ImportError as exc:
         raise RuntimeError(
-            "google-genai is not installed. Run:\n  pip install google-genai"
+            "google-genai is not installed. Run:\n  python -m pip install google-genai"
         ) from exc
 
     _emit(
@@ -292,7 +292,7 @@ def generate_audio_with_gemini(
     if interactions is None or not hasattr(interactions, "create"):
         raise RuntimeError(
             "This google-genai version has no Interactions API. "
-            "Upgrade with: pip install -U google-genai"
+            "Upgrade with: python -m pip install -U google-genai"
         )
 
     def _create(candidate: str) -> Any:

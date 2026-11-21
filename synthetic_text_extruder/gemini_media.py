@@ -79,7 +79,7 @@ def generate_image_with_gemini(
         from google.genai import types
     except ImportError as exc:
         raise RuntimeError(
-            "google-genai is not installed. Run:\n  pip install google-genai"
+            "google-genai is not installed. Run:\n  python -m pip install google-genai"
         ) from exc
 
     _emit(progress, f"Contacting Gemini image model ({model_name})…", percent=15, title="Generating image")
@@ -256,7 +256,7 @@ def generate_video_with_gemini(
         from google.genai import types
     except ImportError as exc:
         raise RuntimeError(
-            "google-genai is not installed. Run:\n  pip install google-genai"
+            "google-genai is not installed. Run:\n  python -m pip install google-genai"
         ) from exc
 
     _emit(progress, f"Contacting Veo ({model_name})…", percent=10, title="Generating video")

@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,7 +7,7 @@ name = "synthetic-text-extruder"
 version = "0.1.0"
 description = "Single-window general AI studio for text, images, video, and music"
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
 requires-python = ">=3.11"
 authors = [{ name = "Synthetic Text Extruder contributors" }]
 keywords = ["ai", "studio", "documentation", "gemini", "lyria"]
@@ -17,7 +17,6 @@ classifiers = [
   "Environment :: MacOS X",
   "Environment :: X11 Applications",
   "Intended Audience :: End Users/Desktop",
-  "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
   "Topic :: Games/Entertainment",
 ]
@@ -25,6 +24,10 @@ dependencies = [
   "pywebview>=5.3",
   "PyYAML>=6.0",
   "google-genai>=1.0",
+  "google-api-python-client>=2.0",
+  "google-auth-oauthlib>=1.0",
+  "pillow>=13.0.0",
+  "reportlab>=4.0",
   "youtube-transcript-api>=0.6",
 ]
 

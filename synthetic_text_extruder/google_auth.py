@@ -240,7 +240,7 @@ def authorize_google(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
             "ok": False,
             "error": (
                 "google-auth-oauthlib is not installed. "
-                "Run: pip install google-api-python-client google-auth-oauthlib"
+                "Run: python -m pip install google-api-python-client google-auth-oauthlib"
             ),
         }
 
@@ -292,7 +292,7 @@ def build_google_service(
     except ImportError as exc:
         raise RuntimeError(
             "google-api-python-client is not installed. "
-            "Run: pip install google-api-python-client google-auth-oauthlib"
+            "Run: python -m pip install google-api-python-client google-auth-oauthlib"
         ) from exc
 
     creds = get_google_credentials(cfg)

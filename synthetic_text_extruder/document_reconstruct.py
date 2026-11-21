@@ -100,7 +100,7 @@ def crop_photo_boxes(
         from PIL import Image
     except ImportError as exc:
         raise RuntimeError(
-            "Pillow is required to extract photos from scans. Run: pip install pillow"
+            "Pillow is required to extract photos from scans. Run: python -m pip install pillow"
         ) from exc
     if not image_path.is_file():
         return []

@@ -408,7 +408,7 @@ def list_available_gemini_models(
         from google import genai
     except ImportError as exc:
         raise RuntimeError(
-            "google-genai is not installed. Run:\n  pip install google-genai"
+            "google-genai is not installed. Run:\n  python -m pip install google-genai"
         ) from exc
 
     aliases = retired_aliases if retired_aliases is not None else GEMINI_RETIRED_MODEL_ALIASES
@@ -754,7 +754,7 @@ def _generate_text_with_gemini(
         from google.genai import types
     except ImportError as exc:
         raise RuntimeError(
-            "google-genai is not installed. Run:\n  pip install google-genai"
+            "google-genai is not installed. Run:\n  python -m pip install google-genai"
         ) from exc
 
     emit(f"Contacting Gemini ({model_name})…", percent=10)

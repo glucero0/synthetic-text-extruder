@@ -126,7 +126,7 @@ def apply_still_filters(
         from PIL import Image, ImageEnhance, ImageFilter, ImageOps
     except ImportError as exc:
         raise RuntimeError(
-            "Pillow is required for batch image filters. Run: pip install pillow"
+            "Pillow is required for batch image filters. Run: python -m pip install pillow"
         ) from exc
 
     image = Image.open(source)
