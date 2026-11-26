@@ -11789,13 +11789,20 @@
           await persistSettingsNow({ applyDisplay: false });
         }
         const authorize = a.authorize_google_workspace || a.authorize_gmail;
-        const res = await authorize.call(a);
-        if (!res.ok) {
-          showToast(res.error || "Google Workspace authorization failed");
-          return;
+        beginBusy("Google Workspace", "Opening Google sign-in…", { delayMs: 0 });
+        try {
+          const res = await authorize.call(a);
+          if (!res || !res.ok) {
+            showToast((res && res.error) || "Google Workspace authorization failed");
+            return;
+          }
+          showToast(res.message || "Google Workspace connected.");
+          await refreshGoogleWorkspaceAuthStatus();
+        } catch (err) {
+          showToast("Google Workspace authorization failed: " + (err && err.message ? err.message : err));
+        } finally {
+          endBusy("Ready");
         }
-        showToast(res.message || "Google Workspace connected.");
-        await refreshGoogleWorkspaceAuthStatus();
       });
     }
 

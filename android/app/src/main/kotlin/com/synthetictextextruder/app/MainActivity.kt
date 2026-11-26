@@ -336,7 +336,7 @@ class MainActivity : AppCompatActivity() {
 
     inner class BrowserOpenerCallback(private val handler: (String) -> Unit) {
         @Suppress("unused")
-        fun __call__(url: String) {
+        fun openUrl(url: String) {
             handler(url)
         }
     }

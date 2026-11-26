@@ -14,6 +14,10 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+# Android's OpenSSL 3.0 build omits the legacy provider module; tell
+# `cryptography` not to abort on import when google-auth loads it.
+os.environ.setdefault("CRYPTOGRAPHY_OPENSSL_NO_LEGACY", "1")
+
 logger = logging.getLogger(__name__)
 
 _RPC_BLOCKLIST = frozenset({"set_window", "set_ui_origin"})
@@ -33,7 +37,10 @@ class _AndroidWebBrowser(webbrowser.BaseBrowser):
 
     def open(self, url: str, new: int = 0, autoraise: bool = True) -> bool:
         try:
-            self._opener(str(url))
+            if hasattr(self._opener, "openUrl"):
+                self._opener.openUrl(str(url))
+            else:
+                self._opener(str(url))
             return True
         except Exception:  # noqa: BLE001
             logger.exception("Android browser opener failed for %s", url)
