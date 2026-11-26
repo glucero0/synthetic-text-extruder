@@ -8,10 +8,12 @@ from typing import Any
 
 import yaml
 
+from .platform_env import configured_data_dir
+
 PACKAGE_ROOT = Path(__file__).resolve().parent
-PROJECT_ROOT = PACKAGE_ROOT.parent
+PROJECT_ROOT = configured_data_dir() or PACKAGE_ROOT.parent
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.yaml"
-EXAMPLE_CONFIG_PATH = PROJECT_ROOT / "config.example.yaml"
+EXAMPLE_CONFIG_PATH = PACKAGE_ROOT.parent / "config.example.yaml"
 
 DEFAULT_GEMINI_TEXT_MODEL = "gemini-2.5-flash"
 DEFAULT_GEMINI_IMAGE_MODEL = "gemini-2.5-flash-image"
@@ -307,6 +309,7 @@ def save_config(updates: dict[str, Any], existing: dict[str, Any] | None = None)
             "prompts": paths.get("prompts") or DEFAULTS["paths"]["prompts"],
         },
     }
+    DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     with DEFAULT_CONFIG_PATH.open("w", encoding="utf-8") as fh:
         yaml.safe_dump(to_write, fh, default_flow_style=False, sort_keys=False)
 

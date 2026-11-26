@@ -1,0 +1,387 @@
+/*
+ * Mobile & Foldable Adaptive Layer for Synthetic Text Extruder.
+ * Scoped to html[data-platform="android"] so desktop wide windows stay untouched.
+ */
+
+html[data-platform="android"] {
+  --mobile-nav-height: 62px;
+  --mobile-rail-width: 72px;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+}
+
+html[data-platform="android"] body {
+  overflow: hidden;
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html[data-platform="android"] #app-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  padding-top: var(--safe-top);
+  padding-left: var(--safe-left);
+  padding-right: var(--safe-right);
+}
+
+/* Minimum 48dp-equivalent touch targets */
+html[data-platform="android"] button,
+html[data-platform="android"] select,
+html[data-platform="android"] input[type="text"],
+html[data-platform="android"] input[type="password"],
+html[data-platform="android"] input[type="number"],
+html[data-platform="android"] .viewer-tab,
+html[data-platform="android"] .settings-nav-item,
+html[data-platform="android"] .app-menu-panel [role="menuitem"],
+html[data-platform="android"] .studio-source-menu [role="menuitem"] {
+  min-height: 44px;
+  font-size: max(15px, var(--ui-font-size, 15px));
+}
+
+html[data-platform="android"] input[type="checkbox"],
+html[data-platform="android"] input[type="radio"] {
+  width: 22px;
+  height: 22px;
+}
+
+html[data-platform="android"] #app-frame-top {
+  min-height: 52px;
+  padding: 6px 10px;
+  gap: 8px;
+}
+
+html[data-platform="android"] #app-status {
+  display: none;
+}
+
+html[data-platform="android"] #windows-layer {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  padding-bottom: calc(var(--mobile-nav-height) + var(--safe-bottom));
+}
+
+html[data-platform="android"] .window-body {
+  padding: 12px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* ── Primary Bottom Nav Bar (Compact / Closed Foldable) ─────────────── */
+.mobile-nav {
+  display: none;
+}
+
+html[data-platform="android"] .mobile-nav {
+  display: flex;
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: calc(var(--mobile-nav-height) + var(--safe-bottom));
+  padding-bottom: var(--safe-bottom);
+  background: var(--ui-window, #ffffff);
+  border-top: 1px solid var(--ui-border-mid, #d0d0d0);
+  z-index: 900;
+  align-items: stretch;
+  justify-content: space-around;
+}
+
+html[data-platform="android"] .mobile-nav-btn {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--ui-muted, #555555);
+  padding: 6px 4px;
+  min-height: 54px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+html[data-platform="android"] .mobile-nav-btn .mobile-nav-icon {
+  font-size: 18px;
+  line-height: 1;
+}
+
+html[data-platform="android"] .mobile-nav-btn.is-active {
+  color: var(--ui-text, #000000);
+  font-weight: 700;
+  box-shadow: inset 0 2px 0 var(--ui-text, #000000);
+}
+
+/* ── "More" Bottom Sheet ────────────────────────────────────────────── */
+.mobile-more-sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+}
+
+.mobile-more-sheet[hidden] {
+  display: none;
+}
+
+.mobile-sheet-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.42);
+}
+
+.mobile-sheet-card {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--ui-window, #ffffff);
+  color: var(--ui-text, #000000);
+  border-top-left-radius: 16px;
+  border-top-right-radius: 16px;
+  padding: 16px 16px calc(16px + env(safe-area-inset-bottom, 0px));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  box-shadow: 0 -8px 28px rgba(0, 0, 0, 0.22);
+}
+
+.mobile-sheet-title {
+  font-weight: 700;
+  font-size: 15px;
+  padding: 4px 4px 6px;
+}
+
+.mobile-sheet-card button {
+  width: 100%;
+  text-align: left;
+  padding: 12px 14px;
+  min-height: 48px;
+  border-radius: 10px;
+}
+
+.mobile-sheet-cancel {
+  text-align: center !important;
+  opacity: 0.78;
+}
+
+/* ── Compact Single-Screen Layouts (Phone / Closed Foldable) ────────── */
+html[data-platform="android"][data-posture="compact"] .studio-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+html[data-platform="android"][data-posture="compact"] .studio-basis-splitter,
+html[data-platform="android"][data-posture="compact"] .lineage-pane-splitter {
+  display: none !important;
+}
+
+html[data-platform="android"][data-posture="compact"] .studio-basis-panel {
+  width: 100% !important;
+  max-width: 100% !important;
+  flex: 0 0 auto !important;
+}
+
+html[data-platform="android"][data-posture="compact"] #studio-prompt {
+  min-height: 150px;
+}
+
+html[data-platform="android"][data-posture="compact"] #btn-generate {
+  width: 100%;
+  min-height: 50px;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+/* Compact Settings: stack categories above active pane */
+html[data-platform="android"][data-posture="compact"] .settings-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+html[data-platform="android"][data-posture="compact"] .settings-nav {
+  display: flex;
+  flex-direction: row;
+  overflow-x: auto;
+  gap: 6px;
+  width: 100% !important;
+  min-width: 0 !important;
+  border-right: 0 !important;
+  border-bottom: 1px solid var(--ui-border-mid, #d0d0d0);
+  padding-bottom: 8px;
+}
+
+html[data-platform="android"][data-posture="compact"] .settings-nav-item {
+  white-space: nowrap;
+  flex: 0 0 auto;
+  padding: 8px 14px;
+  border-radius: 999px;
+}
+
+/* Compact Archives: convert cramped 4-column table into readable cards */
+html[data-platform="android"][data-posture="compact"] .archive-table thead {
+  display: none;
+}
+
+html[data-platform="android"][data-posture="compact"] .archive-table,
+html[data-platform="android"][data-posture="compact"] .archive-table tbody,
+html[data-platform="android"][data-posture="compact"] .archive-table tr,
+html[data-platform="android"][data-posture="compact"] .archive-table td {
+  display: block;
+  width: 100%;
+}
+
+html[data-platform="android"][data-posture="compact"] .archive-table tr {
+  border: 1px solid var(--ui-border-mid, #d0d0d0);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+
+html[data-platform="android"][data-posture="compact"] .archive-table td {
+  border: 0;
+  padding: 2px 0;
+}
+
+/* Compact Image Editor: preview on top, sliders below */
+html[data-platform="android"][data-posture="compact"] .image-edit-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+html[data-platform="android"][data-posture="compact"] .image-edit-controls {
+  width: 100% !important;
+  max-width: 100% !important;
+}
+
+/* Compact Lineage: stack list, graph, and inspector */
+html[data-platform="android"][data-posture="compact"] .lineage-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+}
+
+html[data-platform="android"][data-posture="compact"] .lineage-list-wrap {
+  width: 100% !important;
+  max-height: 170px;
+  overflow-y: auto;
+  border-right: 0 !important;
+  border-bottom: 1px solid var(--ui-border-mid, #d0d0d0);
+}
+
+html[data-platform="android"][data-posture="compact"] .lineage-canvas-wrap {
+  min-height: 300px;
+  flex: 1 0 300px;
+  touch-action: none;
+}
+
+html[data-platform="android"][data-posture="compact"] .lineage-viewer-pane {
+  width: 100% !important;
+  max-width: 100% !important;
+  border-left: 0 !important;
+  border-top: 1px solid var(--ui-border-mid, #d0d0d0);
+}
+
+/* Scrollable Viewer tabs on compact screens */
+html[data-platform="android"] .viewer-tabs {
+  overflow-x: auto;
+  flex-wrap: nowrap;
+  -webkit-overflow-scrolling: touch;
+}
+
+html[data-platform="android"] .viewer-tab {
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+/* ── Expanded Foldable / Tablet Dual-Pane Layout ────────────────────── */
+html[data-platform="android"][data-posture="expanded"] #app-shell {
+  padding-left: calc(var(--mobile-rail-width) + var(--safe-left));
+}
+
+html[data-platform="android"][data-posture="expanded"] #windows-layer {
+  padding-bottom: var(--safe-bottom);
+}
+
+html[data-platform="android"][data-posture="expanded"] .mobile-nav {
+  top: var(--safe-top);
+  bottom: 0;
+  left: var(--safe-left);
+  right: auto;
+  width: var(--mobile-rail-width);
+  height: auto;
+  flex-direction: column;
+  justify-content: flex-start;
+  padding: 12px 4px calc(12px + var(--safe-bottom));
+  border-top: 0;
+  border-right: 1px solid var(--ui-border-mid, #d0d0d0);
+  gap: 6px;
+}
+
+html[data-platform="android"][data-posture="expanded"] .mobile-nav-btn {
+  flex: 0 0 auto;
+  width: 100%;
+  border-radius: 10px;
+  padding: 10px 4px;
+}
+
+html[data-platform="android"][data-posture="expanded"] .mobile-nav-btn.is-active {
+  box-shadow: inset 3px 0 0 var(--ui-text, #000000);
+}
+
+/* Hinge-safe dual-pane Studio on unfolded foldables */
+html[data-platform="android"][data-posture="expanded"] .studio-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 42%);
+  column-gap: max(16px, var(--hinge-width, 0px));
+  align-items: start;
+}
+
+html[data-platform="android"][data-posture="expanded"] .studio-basis-splitter {
+  display: none !important;
+}
+
+html[data-platform="android"][data-posture="expanded"] .studio-basis-panel {
+  width: 100% !important;
+  max-width: 100% !important;
+}
+
+/* Hinge-safe dual-pane Image Editor on unfolded foldables */
+html[data-platform="android"][data-posture="expanded"] .image-edit-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(280px, 0.85fr);
+  column-gap: max(16px, var(--hinge-width, 0px));
+}
+
+/* Hinge-safe dual-pane Lineage on unfolded foldables */
+html[data-platform="android"][data-posture="expanded"] .lineage-body {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr) minmax(280px, 38%);
+  column-gap: max(12px, var(--hinge-width, 0px));
+}
+
+html[data-platform="android"][data-posture="expanded"] .lineage-pane-splitter {
+  display: none !important;
+}
+
+html[data-platform="android"][data-posture="expanded"] .lineage-viewer-pane {
+  width: 100% !important;
+  max-width: 100% !important;
+}
+
+/* Hide desktop-only controls on Android */
+html[data-platform="android"][data-video-editor="false"] #btn-edit-video,
+html[data-platform="android"][data-video-editor="false"] option[value="video-edit"],
+html[data-platform="android"] #btn-pick-media-folder,
+html[data-platform="android"] #btn-pick-exports-folder {
+  display: none !important;
+}

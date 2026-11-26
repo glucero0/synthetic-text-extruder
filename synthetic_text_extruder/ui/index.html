@@ -2,10 +2,11 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Synthetic Text Extruder</title>
   <link rel="stylesheet" href="styles.css?v=modern26" />
   <link rel="stylesheet" href="modern.css?v=modern18" />
+  <link rel="stylesheet" href="mobile.css?v=android1" />
 </head>
 <body>
   <div id="desktop">
@@ -528,19 +529,20 @@
                   </p>
                   <div class="field-row-stacked">
                     <label for="google-workspace-credentials-path">
-                      <span>OAuth client JSON</span>
+                      <span>OAuth JSON (Client or Token)</span>
                       <span class="label-hint" id="google-workspace-auth-badge">Not configured</span>
                     </label>
                     <input
                       id="google-workspace-credentials-path"
                       type="text"
                       readonly
-                      placeholder="Pick OAuth client JSON…"
+                      placeholder="Pick OAuth client JSON or authorized token JSON…"
                     />
                   </div>
                   <div class="form-actions">
-                    <button type="button" id="btn-google-workspace-pick-credentials">Pick OAuth JSON…</button>
+                    <button type="button" id="btn-google-workspace-pick-credentials">Import OAuth JSON…</button>
                     <button type="button" id="btn-google-workspace-connect">Connect Google Workspace…</button>
+                    <button type="button" id="btn-google-workspace-disconnect" hidden>Remove Credentials</button>
                   </div>
                   <p class="hint" id="google-workspace-auth-status"></p>
                 </fieldset>
@@ -1176,6 +1178,7 @@
   <script src="vendor/jspdf.umd.min.js"></script>
   <script src="catalog.js"></script>
   <script src="image_edit.js"></script>
-  <script src="app.js?v=modern27"></script>
+  <script src="android-bridge.js?v=android1"></script>
+  <script src="app.js?v=modern28"></script>
 </body>
 </html>

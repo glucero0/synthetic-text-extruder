@@ -115,6 +115,10 @@ _ALIAS_SET = {t["alias"] for t in TOOL_CATALOG}
 
 def list_tool_catalog() -> list[dict[str, str]]:
     """Return a copy of the built-in tool catalog for UI / bootstrap."""
+    from .platform_env import is_android
+
+    if is_android():
+        return [dict(t) for t in TOOL_CATALOG if t["alias"] != "execute_powershell"]
     return [dict(t) for t in TOOL_CATALOG]
 
 
@@ -122,16 +126,33 @@ def normalize_tool_aliases(aliases: list[str] | None) -> list[str]:
     """Dedupe and keep only known catalog aliases (stable catalog order)."""
     if not aliases:
         return []
+    from .platform_env import is_android
+
     wanted = {str(a).strip() for a in aliases if str(a).strip()}
+    if is_android():
+        wanted.discard("execute_powershell")
     return [t["alias"] for t in TOOL_CATALOG if t["alias"] in wanted]
 
 
 def _require_absolute_path(path_str: str) -> Path:
+    from .config import PROJECT_ROOT
+    from .platform_env import configured_workspace_dir, is_android
+
     raw = (path_str or "").strip()
     if not raw:
         raise ValueError("path is required")
     p = Path(raw)
     if not p.is_absolute():
+        if is_android():
+            base = configured_workspace_dir() or (PROJECT_ROOT / "workspace")
+            base.mkdir(parents=True, exist_ok=True)
+            resolved_base = base.resolve()
+            resolved = (resolved_base / p).resolve(strict=False)
+            try:
+                resolved.relative_to(resolved_base)
+            except ValueError as exc:
+                raise ValueError(f"path must stay inside workspace folder (got {raw!r})") from exc
+            return resolved
         raise ValueError(f"path must be absolute (got {raw!r})")
     # Reject empty / odd drive-relative forms after resolve where possible
     try:

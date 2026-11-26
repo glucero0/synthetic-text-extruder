@@ -384,6 +384,15 @@ paths:
   exports: exports # Save As dialogs always open here (not last-used)
 ```
 
+## Android (phone & foldable)
+
+The repository includes a hybrid Android wrapper under `android/` (Chaquopy Python 3.12 + Android WebView + Jetpack WindowManager) that reuses the shared core engine and adapts the UI for both single-screen phones and unfolded foldables:
+
+- **Single screen vs. foldable:** Uses a bottom navigation bar and stacked/card views on standard phones or closed foldable cover screens, shifting to a left navigation rail and hinge-aware dual-pane layouts when unfolded without losing active prompts or jobs.
+- **Google Workspace OAuth on Android:** In **Settings → Google**, tap **Import OAuth JSON…** to pick either an already-authorized `google_workspace_token.json` or a Google Cloud OAuth Client JSON from phone storage (auto-detected and copied into app-private storage so you can delete the Downloads copy). Tap **Connect Google Workspace…** to sign in via Chrome Custom Tabs when using a Client JSON, or **Remove Credentials** to clear stored tokens.
+- **Desktop-only features omitted on Android:** **Video Editor** (FFmpeg) and **PowerShell** (`execute_powershell`) are hidden on Android. Local file tools (`read_text`, `write_text`, `read_json`, `write_json`) accept simple relative filenames scoped to the app's private workspace folder.
+- **Building & Releases:** GitHub Actions (`.github/workflows/android.yml`) compiles the Android APK automatically and publishes `.apk` files to **GitHub Releases** on `v*` tags or manual workflow dispatch.
+
 ## License
 
 MIT — see [LICENSE](LICENSE). UI fonts are loaded from Google Fonts (open-source licenses such as OFL and Apache 2.0).

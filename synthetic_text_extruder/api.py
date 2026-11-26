@@ -237,8 +237,11 @@ class Api:
     def get_bootstrap(self) -> dict[str, Any]:
         creations = self.store.load()
         aliases = merged_retired_aliases(self.config.get("gemini") or {})
+        from .platform_env import platform_capabilities
+
         return {
             "version": __version__,
+            "platform": platform_capabilities(),
             "config": self._public_config(),
             "suggestedGeminiModels": [
                 m
@@ -274,14 +277,30 @@ class Api:
         return google_auth_status(self.config)
 
     def authorize_google_workspace(self) -> dict[str, Any]:
-        """Run desktop OAuth for Gmail, Drive, Docs, and Calendar (opens browser)."""
+        """Run OAuth flow for Gmail, Drive, Docs, Calendar, and Tasks (opens browser)."""
         from .google_auth import authorize_google
 
         return authorize_google(self.config)
 
+    def import_google_workspace_json(self, raw_json: str) -> dict[str, Any]:
+        """Import either a Google OAuth client JSON or an authorized token JSON."""
+        from .google_auth import import_google_oauth_json
+
+        res = import_google_oauth_json(raw_json, self.config)
+        self.config = load_config()
+        return res
+
+    def disconnect_google_workspace(self) -> dict[str, Any]:
+        """Clear stored Google Workspace OAuth credentials from app storage."""
+        from .google_auth import clear_google_credentials
+
+        res = clear_google_credentials(self.config)
+        self.config = load_config()
+        return res
+
     def pick_google_workspace_credentials(self) -> dict[str, Any]:
-        """Pick a Google OAuth client JSON file for Workspace tools."""
-        import webview
+        """Pick a Google OAuth client JSON or authorized token JSON file."""
+        from .google_auth import classify_google_oauth_json, import_google_oauth_json
 
         if self._window is None:
             return {"ok": False, "error": "No window"}
@@ -295,7 +314,16 @@ class Api:
         path = Path(result if isinstance(result, str) else result[0])
         if not path.is_file():
             return {"ok": False, "error": f"File not found: {path}"}
-        return {"ok": True, "path": str(path.resolve())}
+        try:
+            raw_text = path.read_text(encoding="utf-8")
+            parsed = json.loads(raw_text)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return {"ok": True, "path": str(path.resolve())}
+        if classify_google_oauth_json(parsed) == "token":
+            res = import_google_oauth_json(raw_text, self.config)
+            self.config = load_config()
+            return res
+        return {"ok": True, "kind": "client", "path": str(path.resolve())}
 
     # Older Control Panel JS called these Gmail names.
     def get_gmail_auth_status(self) -> dict[str, Any]:
@@ -2697,6 +2725,113 @@ class Api:
         if mod == "text":
             return self._import_text_from_path(path, save_to_archives=True)
         return self._import_media_from_path(path, mod)
+
+    def import_uploaded_files(
+        self,
+        files: list[dict[str, Any]],
+        mode: str = "sources",
+        already: int = 0,
+        modality: str = "image",
+        save_to_archives: bool = False,
+        folder_name: str = "",
+    ) -> dict[str, Any]:
+        """
+        Import files uploaded via browser/Android file picker (base64 payloads).
+
+        Supports modes: ``sources``, ``viewer``, ``text``, ``media``, ``pdf``, ``json``.
+        """
+        import base64
+        import tempfile
+
+        items = [f for f in (files or []) if isinstance(f, dict)]
+        if not items:
+            return {"ok": False, "cancelled": True}
+
+        with tempfile.TemporaryDirectory(prefix="ste_upload_") as tmp:
+            tmp_dir = Path(tmp)
+            written: list[Path] = []
+            for idx, item in enumerate(items):
+                raw_name = Path(str(item.get("name") or f"file_{idx}")).name
+                safe_name = raw_name.replace("/", "_").replace("\\", "_").strip() or f"file_{idx}"
+                b64 = str(item.get("data_b64") or item.get("base64") or "")
+                if "," in b64 and b64.startswith("data:"):
+                    b64 = b64.split(",", 1)[1]
+                try:
+                    raw_bytes = base64.b64decode(b64) if b64 else b""
+                except Exception as exc:  # noqa: BLE001
+                    return {"ok": False, "error": f"Invalid upload data for {safe_name}: {exc}"}
+                dest = tmp_dir / safe_name
+                if dest.exists():
+                    dest = tmp_dir / f"{idx}_{safe_name}"
+                dest.write_bytes(raw_bytes)
+                written.append(dest)
+
+            kind = (mode or "sources").strip().lower()
+            if kind == "sources":
+                return self._import_source_paths(
+                    written,
+                    already=already,
+                    folder_name=folder_name,
+                )
+            if kind == "viewer":
+                from .media_store import modality_for_path
+
+                path = written[0]
+                mod = modality_for_path(path)
+                if not mod:
+                    return {
+                        "ok": False,
+                        "error": "File type not supported (executables/binaries are rejected).",
+                    }
+                if mod == "text":
+                    return self._import_text_from_path(path, save_to_archives=True)
+                return self._import_media_from_path(path, mod)
+            if kind == "text":
+                return self._import_text_from_path(written[0], bool(save_to_archives))
+            if kind == "pdf":
+                return self._import_media_from_path(written[0], "pdf")
+            if kind == "media":
+                from .modality import normalize_modality
+
+                mod = normalize_modality(modality, default="image")
+                return self._import_media_from_path(written[0], mod)
+            if kind == "json":
+                try:
+                    raw_text = written[0].read_text(encoding="utf-8")
+                    data = json.loads(raw_text)
+                except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                    return {"ok": False, "error": f"Invalid JSON file: {exc}"}
+                if isinstance(data, dict):
+                    data = [data]
+                if not isinstance(data, list):
+                    return {"ok": False, "error": "JSON must be an array of creations."}
+                merged = self.import_creations(data)
+                return {"ok": True, "creations": merged, "imported": len(data)}
+            return {"ok": False, "error": f"Unknown upload mode: {kind!r}"}
+
+    def prepare_export_payload(self, creation: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Return filename, mimeType, and base64 bytes for Android Share / Save."""
+        import base64
+
+        from .media_store import mime_for_path, read_media_bytes
+
+        item = dict(creation or {})
+        rel = item.get("mediaPath") or item.get("media_path") or ""
+        if not rel:
+            return {"ok": False, "error": "This item has no media file to export."}
+        data = read_media_bytes(str(rel), config=self.config)
+        if not data:
+            return {"ok": False, "error": "Media file could not be read."}
+        mime = str(item.get("mimeType") or item.get("mime_type") or mime_for_path(Path(str(rel))) or "application/octet-stream")
+        suggested = self.suggest_media_filename(item, fallback_ext=Path(str(rel)).suffix or ".bin")
+        filename = suggested.get("filename") or Path(str(rel)).name
+        return {
+            "ok": True,
+            "filename": filename,
+            "mimeType": mime,
+            "base64": base64.b64encode(data).decode("ascii"),
+            "size": len(data),
+        }
 
     def duplicate_creation(self, creation_id: str) -> dict[str, Any]:
         """Clone a creation (and media file) so edits become a new Archive item."""
