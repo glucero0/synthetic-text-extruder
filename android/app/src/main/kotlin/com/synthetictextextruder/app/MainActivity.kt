@@ -193,7 +193,13 @@ class MainActivity : AppCompatActivity() {
         val py = Python.getInstance()
         val serverMod = py.getModule("synthetic_text_extruder.android_server")
         val opener = BrowserOpenerCallback { url ->
-            runOnUiThread { openInCustomTab(url) }
+            runOnUiThread {
+                // Keep outbound DNS/network alive while Chrome Custom Tabs is in foreground (Android 15+)
+                if (url.contains("accounts.google.com") || url.contains("oauth")) {
+                    GenerationForegroundService.start(this, "Signing in to Google Workspace…")
+                }
+                openInCustomTab(url)
+            }
         }
         val info: PyObject = serverMod.callAttr(
             "start_android_server",

@@ -22,19 +22,37 @@
 
   // ── 1. HTTP JSON-RPC bridge mimicking pywebview.api ──────────────────
   async function rpcCall(method, args) {
-    const resp = await fetch("/api/rpc/" + encodeURIComponent(method), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-STE-Token": token,
-      },
-      body: JSON.stringify({ args: args || [], kwargs: {} }),
-    });
-    const data = await resp.json().catch(() => ({ ok: false, error: "Invalid server response" }));
-    if (!resp.ok || data.ok === false) {
-      throw new Error(data.error || "RPC failed (" + resp.status + ")");
+    const host = window.AndroidHost;
+    const keepAlive =
+      method === "authorize_google_workspace" || method === "authorize_gmail";
+    if (keepAlive && host && typeof host.startForegroundJob === "function") {
+      try {
+        host.startForegroundJob("Connecting Google Workspace…");
+      } catch (_e) {}
     }
-    return data.result;
+    try {
+      const resp = await fetch("/api/rpc/" + encodeURIComponent(method), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-STE-Token": token,
+        },
+        body: JSON.stringify({ args: args || [], kwargs: {} }),
+      });
+      const data = await resp
+        .json()
+        .catch(() => ({ ok: false, error: "Invalid server response" }));
+      if (!resp.ok || data.ok === false) {
+        throw new Error(data.error || "RPC failed (" + resp.status + ")");
+      }
+      return data.result;
+    } finally {
+      if (keepAlive && host && typeof host.stopForegroundJob === "function") {
+        try {
+          host.stopForegroundJob();
+        } catch (_e) {}
+      }
+    }
   }
 
   function fileToBase64(file) {

@@ -7,9 +7,11 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import com.chaquo.python.Python
 
 class GenerationForegroundService : Service() {
@@ -34,7 +36,12 @@ class GenerationForegroundService : Service() {
 
         ensureChannel()
         val message = intent?.getStringExtra(EXTRA_MESSAGE) ?: "Generating with Gemini…"
-        startForeground(NOTIFICATION_ID, buildNotification(message))
+        val fgsType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+        } else {
+            0
+        }
+        ServiceCompat.startForeground(this, NOTIFICATION_ID, buildNotification(message), fgsType)
         return START_NOT_STICKY
     }
 

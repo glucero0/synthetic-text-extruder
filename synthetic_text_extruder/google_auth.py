@@ -387,6 +387,9 @@ def authorize_google(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
         creds = flow.run_local_server(
             port=0,
             open_browser=True,
+            success_message=(
+                "Google Workspace connected! Close this tab to return to Synthetic Text Extruder."
+            ),
             access_type="offline",
             prompt="consent",
             include_granted_scopes="true",
