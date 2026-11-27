@@ -28,8 +28,10 @@ from synthetic_text_extruder.gemini_provider import normalize_gemini_model
 
 def test_default_backend_is_gemini():
     assert DEFAULTS["backend"]["provider"] == "gemini"
-    assert DEFAULTS["gemini"]["text_model"] == "gemini-2.5-flash"
-    assert DEFAULTS["gemini"]["audio_model"] == "lyria-3-clip-preview"
+    assert DEFAULTS["gemini"]["text_model"] == ""
+    assert DEFAULTS["gemini"]["image_model"] == ""
+    assert DEFAULTS["gemini"]["video_model"] == ""
+    assert DEFAULTS["gemini"]["audio_model"] == ""
     assert DEFAULTS["gemini"]["use_tools"] is False
     assert DEFAULTS["paths"]["exports"] == "exports"
     assert "openrouter" not in DEFAULTS
@@ -231,8 +233,40 @@ def test_extract_json_still_works():
 
 def test_normalize_gemini_model():
     assert normalize_gemini_model("gemini-2.5-flash") == "gemini-2.5-flash"
-    assert normalize_gemini_model("") == "gemini-2.5-flash"
-    assert normalize_gemini_model(None) == "gemini-2.5-flash"
+    assert normalize_gemini_model("") == ""
+    assert normalize_gemini_model(None) == ""
+
+
+def test_save_config_stale_existing_never_wipes_disk_api_key_or_models(tmp_path, monkeypatch):
+    dest = tmp_path / "config.yaml"
+    monkeypatch.setattr("synthetic_text_extruder.config.DEFAULT_CONFIG_PATH", dest)
+    stale_existing = copy.deepcopy(DEFAULTS)
+
+    # Thread 1 saves API key and selected live models
+    save_config(
+        {
+            "gemini": {
+                "api_key": "AIza-persistent-key",
+                "text_model": "gemini-3.5-flash",
+                "video_model": "veo-3.1-generate-preview",
+            }
+        },
+        existing=stale_existing,
+    )
+
+    # Thread 2 passes an old pre-save snapshot (`stale_existing` with api_key=None)
+    # and blank api_key update (e.g. UI tab switch / background save).
+    out = save_config(
+        {"gemini": {"api_key": ""}, "ui": {"app_theme": "dark"}},
+        existing=stale_existing,
+    )
+    assert out["gemini"]["api_key"] == "AIza-persistent-key"
+    assert out["gemini"]["text_model"] == "gemini-3.5-flash"
+    assert out["gemini"]["video_model"] == "veo-3.1-generate-preview"
+    written = yaml.safe_load(dest.read_text(encoding="utf-8"))
+    assert written["gemini"]["api_key"] == "AIza-persistent-key"
+    assert written["gemini"]["text_model"] == "gemini-3.5-flash"
+    assert written["ui"]["app_theme"] == "dark"
 
 
 def test_normalize_ui_font_size():

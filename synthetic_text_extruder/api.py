@@ -243,11 +243,7 @@ class Api:
             "version": __version__,
             "platform": platform_capabilities(),
             "config": self._public_config(),
-            "suggestedGeminiModels": [
-                m
-                for m in SUGGESTED_GEMINI_MODELS
-                if (m.get("repo_id") or "").lower() not in {k.lower() for k in aliases}
-            ],
+            "suggestedGeminiModels": [],
             "retiredGeminiModels": sorted(
                 {_gemini_model_id(k).lower() for k in aliases if _gemini_model_id(k)}
             ),
@@ -492,22 +488,18 @@ class Api:
     def get_model_status(self) -> dict[str, Any]:
         return provider_status(self.config)
 
-    def list_gemini_models(self) -> dict[str, Any]:
-        """Fetch generateContent models available to the saved Gemini API key."""
+    def list_gemini_models(self, api_key: str = "") -> dict[str, Any]:
+        """Fetch live studio models available to the saved (or provided) Gemini API key."""
+        self.config = load_config()
         gemini_cfg = self.config.get("gemini") or {}
-        key = resolve_gemini_key(gemini_cfg)
+        key = (api_key or "").strip() or resolve_gemini_key(gemini_cfg)
         aliases = merged_retired_aliases(gemini_cfg)
         if not key:
             return {
                 "ok": False,
-                "error": "Paste a Gemini API key and Save before refreshing the model list.",
-                "models": [
-                    m
-                    for m in SUGGESTED_GEMINI_MODELS
-                    if (m.get("repo_id") or "").lower()
-                    not in {k.lower() for k in aliases}
-                ],
-                "source": "fallback",
+                "error": "Paste a Gemini API key and Save before fetching the model list.",
+                "models": [],
+                "source": "none",
             }
         try:
             models = list_available_gemini_models(key, retired_aliases=aliases)
@@ -522,25 +514,51 @@ class Api:
             return {
                 "ok": False,
                 "error": str(exc),
-                "models": [
-                    m
-                    for m in SUGGESTED_GEMINI_MODELS
-                    if (m.get("repo_id") or "").lower()
-                    not in {k.lower() for k in aliases}
-                ],
-                "source": "fallback",
+                "models": [],
+                "source": "none",
             }
 
-    def recommend_models(self, criteria: str = "balanced", provider: str = "") -> dict[str, Any]:
-        """Pick Text / Image / Video Gemini models from Google's catalog."""
+    def recommend_models(
+        self,
+        criteria: str = "balanced",
+        provider: str = "",
+        only_missing: bool = False,
+        persist: bool = True,
+    ) -> dict[str, Any]:
+        """Pick Text / Image / Video / Audio Gemini models from Google's live catalog."""
         from .recommend_models import recommend_models_for_config
 
         try:
-            return recommend_models_for_config(
+            self.config = load_config()
+            res = recommend_models_for_config(
                 self.config,
                 criteria,
                 provider=(provider or "").strip() or None,
             )
+            if res.get("ok") and persist:
+                picks = res.get("picks") or {}
+                avail = set(res.get("availableModalities") or [])
+                cur_gemini = dict(self.config.get("gemini") or {})
+                slot_map = {
+                    "text": "text_model",
+                    "image": "image_model",
+                    "video": "video_model",
+                    "audio": "audio_model",
+                }
+                gemini_updates: dict[str, Any] = {
+                    "audio_unavailable": "audio" not in avail,
+                }
+                for mod, slot in slot_map.items():
+                    picked_id = str(picks.get(mod) or "").strip()
+                    existing_id = str(cur_gemini.get(slot) or "").strip()
+                    if only_missing and existing_id:
+                        continue
+                    if picked_id or not only_missing:
+                        gemini_updates[slot] = picked_id
+                self.config = save_config({"gemini": gemini_updates}, existing=self.config)
+                res["config"] = self._public_config()
+                res["modelStatus"] = provider_status(self.config)
+            return res
         except ValueError as exc:
             return {"ok": False, "error": str(exc)}
         except Exception as exc:  # noqa: BLE001

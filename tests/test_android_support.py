@@ -383,6 +383,40 @@ def test_android_media3_bridge_video_features(monkeypatch, tmp_path):
     assert base64.b64decode(exp["base64"]) == fake_mp4
 
 
+def test_oauth_token_preserves_subset_scopes_and_survives_transient_offline(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(config, "DEFAULT_CONFIG_PATH", tmp_path / "config.yaml")
+
+    # Token granted ONLY Gmail scope (subset of GOOGLE_SCOPES) + expired access token + valid refresh_token
+    subset_token = {
+        "type": "authorized_user",
+        "client_id": "12345.apps.googleusercontent.com",
+        "client_secret": "secret",
+        "refresh_token": "1//valid-refresh-token",
+        "token": "ya29.expired-access",
+        "expiry": "2020-01-01T00:00:00Z",
+        "scopes": [google_auth.GMAIL_MODIFY],
+    }
+    tpath = tmp_path / ".synthetic-text-extruder" / "google_workspace_token.json"
+    tpath.parent.mkdir(parents=True, exist_ok=True)
+    tpath.write_text(json.dumps(subset_token), encoding="utf-8")
+
+    loaded = google_auth._load_stored_credentials(tpath)
+    assert loaded is not None
+    # Must preserve the token's own subset scopes rather than overriding with all GOOGLE_SCOPES
+    assert google_auth.granted_scopes(loaded) == [google_auth.GMAIL_MODIFY]
+
+    # Simulate transient network failure on cold Android startup (NOT RefreshError)
+    def _offline_refresh(_creds):
+        raise ConnectionError("Temporary DNS failure on app launch")
+
+    monkeypatch.setattr(google_auth, "_refresh_credentials", _offline_refresh)
+    status = google_auth.google_auth_status()
+    assert status["authorized"] is True
+    assert status["has_refresh_token"] is True
+    assert status["granted_products"] == ["Gmail"]
+
+
 def test_android_server_rpc_auth_and_html_injection(monkeypatch, tmp_path):
     monkeypatch.setenv(platform_env.PLATFORM_ENV_VAR, "android")
     monkeypatch.setenv(platform_env.DATA_DIR_ENV_VAR, str(tmp_path))

@@ -2468,6 +2468,52 @@ html[data-reading-surface="dark"] .studio-source-text-preview {
   display: none !important;
 }
 
+@keyframes ste-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.ste-spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  border: 2.5px solid rgba(128, 128, 128, 0.3);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: ste-spin 0.75s linear infinite;
+}
+
+.ste-spinner[hidden] {
+  display: none !important;
+}
+
+.busy-message-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.busy-message-row #busy-message {
+  margin: 0;
+}
+
+.models-loading-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  margin: 8px 0;
+  border-radius: 6px;
+  background: rgba(127, 127, 127, 0.12);
+  font-weight: 500;
+}
+
+.models-loading-banner[hidden] {
+  display: none !important;
+}
+
 #confirm-overlay {
   position: absolute;
   inset: 0;

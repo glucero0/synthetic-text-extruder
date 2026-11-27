@@ -300,6 +300,8 @@ def _call_gemini_router(
     if not api_key:
         return None
     model_name = resolve_gemini_model_for_modality(gemini_cfg, "text")
+    if not model_name:
+        return None
 
     def _cancelled() -> bool:
         return bool(cancel_event is not None and cancel_event.is_set())

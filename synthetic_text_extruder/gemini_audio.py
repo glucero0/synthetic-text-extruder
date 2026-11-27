@@ -233,7 +233,7 @@ def generate_audio_with_gemini(
 ) -> dict[str, Any]:
     """Generate music via Lyria and store under media/ as MP3 or WAV."""
     from .cancellation import run_cancellable
-    from .gemini_provider import DEFAULT_GEMINI_AUDIO_MODEL
+    from .gemini_provider import ensure_gemini_model_for_modality
     from .gemini_provider import normalize_gemini_model as _ngm
     from .gemini_provider import resolve_api_key as _rak
 
@@ -251,7 +251,7 @@ def generate_audio_with_gemini(
 
     model_name = normalize_model(gemini_cfg.get("audio_model"))
     if (classify_model_modality(model_name) or "text") != "audio":
-        model_name = DEFAULT_GEMINI_AUDIO_MODEL
+        model_name = ensure_gemini_model_for_modality(gemini_cfg, "audio")
     candidates = lyria_model_candidates(model_name)
 
     try:

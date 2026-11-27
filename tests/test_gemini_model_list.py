@@ -42,15 +42,14 @@ def test_retired_gemini_2_0_models_are_hidden():
         assert not _is_studio_gemini_model(mid, supported_actions=["generateContent"])
 
 
-def test_normalize_remaps_retired_gemini_models():
+def test_normalize_clears_retired_gemini_models():
     from synthetic_text_extruder.gemini_provider import normalize_gemini_model
 
-    assert normalize_gemini_model("gemini-2.0-flash-lite") == "gemini-3.1-flash-lite"
-    assert (
-        normalize_gemini_model("models/gemini-2.0-flash-lite") == "gemini-3.1-flash-lite"
-    )
-    assert normalize_gemini_model("gemini-2.5-flash-lite") == "gemini-3.1-flash-lite"
-    assert normalize_gemini_model("gemini-2.0-flash") == "gemini-2.5-flash"
+    assert normalize_gemini_model("gemini-2.0-flash-lite") == ""
+    assert normalize_gemini_model("models/gemini-2.0-flash-lite") == ""
+    assert normalize_gemini_model("gemini-2.5-flash-lite") == ""
+    assert normalize_gemini_model("gemini-2.0-flash") == ""
+    assert normalize_gemini_model("veo-2.0-generate-001") == ""
     assert normalize_gemini_model("gemini-2.5-flash") == "gemini-2.5-flash"
 
 
@@ -66,14 +65,16 @@ def test_classifies_image_and_video_models():
         assert _is_studio_gemini_model(mid)
         assert not _is_text_generation_gemini_model(mid)
 
-    # Retired 2.0 image preview is remapped / hidden from the picker
+    # Retired 2.0 image preview and retired veo-2.0 are hidden from the picker
     assert (
         classify_model_modality("gemini-2.0-flash-preview-image-generation") == "image"
     )
     assert not _is_studio_gemini_model("gemini-2.0-flash-preview-image-generation")
+    assert classify_model_modality("veo-2.0-generate-001") == "video"
+    assert not _is_studio_gemini_model("veo-2.0-generate-001")
 
     for mid in (
-        "veo-2.0-generate-001",
+        "veo-3.0-generate-001",
         "veo-3.1-generate-preview",
         "veo-3.1-fast-generate-preview",
     ):

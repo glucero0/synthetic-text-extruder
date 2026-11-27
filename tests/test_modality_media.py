@@ -174,20 +174,30 @@ def test_infer_text_extract_intent_from_studio_prompt():
 
 def test_gemini_routes_music_prompt_ok():
     prompt = "Compose a song about neon rain"
-    ok = check_prompt_model_compatibility(prompt, "gemini-flash-latest", provider="gemini")
+    ok = check_prompt_model_compatibility(
+        prompt,
+        "gemini-flash-latest",
+        provider="gemini",
+        gemini_cfg={"audio_model": "lyria-3.5"},
+    )
     assert ok["ok"] is True
     assert ok.get("routed") is True
     assert ok["modelModality"] == "audio"
-    assert "lyria" in ok["model"]
+    assert ok["model"] == "lyria-3.5"
 
 
 def test_gemini_routes_image_prompt_ok():
     prompt = "create an image of a dragon in a suit"
-    ok = check_prompt_model_compatibility(prompt, "gemini-flash-latest", provider="gemini")
+    ok = check_prompt_model_compatibility(
+        prompt,
+        "gemini-flash-latest",
+        provider="gemini",
+        gemini_cfg={"image_model": "imagen-4.0-generate-001"},
+    )
     assert ok["ok"] is True
     assert ok.get("routed") is True
     assert ok["modelModality"] == "image"
-    assert "flash-image" in ok["model"] or "image" in ok["model"]
+    assert ok["model"] == "imagen-4.0-generate-001"
 
 
 def test_classify_local_diffusion_and_t2v():

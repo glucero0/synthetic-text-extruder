@@ -135,31 +135,52 @@ def _load_stored_credentials(path: Path) -> Any | None:
     try:
         from google.oauth2.credentials import Credentials
 
-        return Credentials.from_authorized_user_file(str(path), GOOGLE_SCOPES)
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            return None
+        info = dict(raw)
+        if not info.get("token") and info.get("access_token"):
+            info["token"] = info["access_token"]
+        stored_scopes = info.get("scopes")
+        if isinstance(stored_scopes, list) and stored_scopes:
+            return Credentials.from_authorized_user_info(info)
+        return Credentials.from_authorized_user_info(info, GOOGLE_SCOPES)
     except Exception as exc:  # noqa: BLE001
         logger.info("Could not load Google token: %s", exc)
         return None
 
 
 def _save_credentials(creds: Any, path: Path) -> None:
+    import os
+    import uuid
+
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(creds.to_json(), encoding="utf-8")
+    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        tmp.write_text(creds.to_json(), encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
 
 
 def _refresh_credentials(creds: Any) -> Any:
     from google.auth.transport.requests import Request
 
-    if creds and creds.expired and creds.refresh_token:
+    if creds and (creds.expired or not getattr(creds, "token", None)) and creds.refresh_token:
         creds.refresh(Request())
     return creds
 
 
-def get_google_credentials(
+def _get_google_credentials_detail(
     cfg: dict[str, Any] | None = None,
     *,
     required_scopes: list[str] | None = None,
-) -> Any | None:
-    """Return valid Google credentials, refreshing the token file when needed."""
+) -> tuple[Any | None, bool]:
+    """Return ``(credentials, refresh_revoked)``."""
     cfg = cfg or load_config()
     path = token_path(cfg)
     creds = _load_stored_credentials(path)
@@ -168,27 +189,42 @@ def get_google_credentials(
             if legacy == path:
                 continue
             creds = _load_stored_credentials(legacy)
-            if creds and getattr(creds, "valid", False):
+            if creds and (getattr(creds, "valid", False) or getattr(creds, "refresh_token", None)):
                 _save_credentials(creds, path)
                 break
     if not creds:
-        return None
+        return None, False
     if not creds.valid:
         if not getattr(creds, "refresh_token", None):
             logger.info("Google token expired and no refresh token is stored.")
-            return None
+            return None, True
         try:
             creds = _refresh_credentials(creds)
         except Exception as exc:  # noqa: BLE001
-            logger.info("Google token refresh failed: %s", exc)
-            return None
+            from google.auth.exceptions import RefreshError
+
+            revoked = isinstance(exc, RefreshError)
+            logger.info("Google token refresh failed (revoked=%s): %s", revoked, exc)
+            return None, revoked
         if creds and creds.valid:
             _save_credentials(creds, path)
     if not (creds and creds.valid):
-        return None
+        return None, False
     for scope in required_scopes or []:
         if not has_scope(creds, scope):
-            return None
+            return None, False
+    return creds, False
+
+
+def get_google_credentials(
+    cfg: dict[str, Any] | None = None,
+    *,
+    required_scopes: list[str] | None = None,
+) -> Any | None:
+    """Return valid Google credentials, refreshing the token file when needed."""
+    creds, _revoked = _get_google_credentials_detail(
+        cfg, required_scopes=required_scopes
+    )
     return creds
 
 
@@ -327,23 +363,26 @@ def google_auth_status(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     creds_path = credentials_path(cfg)
     path = token_path(cfg)
     stored = _load_stored_credentials(path)
-    creds = get_google_credentials(cfg)
-    granted = granted_scopes(creds or stored)
+    creds, refresh_revoked = _get_google_credentials_detail(cfg)
+    has_refresh = bool(stored and getattr(stored, "refresh_token", None))
+    authorized = creds is not None or (has_refresh and not refresh_revoked)
+    active = creds or stored
+    granted = granted_scopes(active)
     has_client = creds_path is not None and creds_path.is_file()
     has_token = stored is not None or path.is_file()
     return {
         "ok": True,
-        "configured": has_client or creds is not None,
+        "configured": has_client or authorized,
         "has_client_json": has_client,
         "has_token": has_token,
-        "authorized": creds is not None,
-        "has_refresh_token": bool(stored and getattr(stored, "refresh_token", None)),
+        "authorized": authorized,
+        "has_refresh_token": has_refresh,
         "credentials_path": str(creds_path) if creds_path else "",
         "token_path": str(path),
         "requested_scopes": list(GOOGLE_SCOPES),
         "granted_scopes": granted,
-        "granted_products": granted_products(creds or stored) if granted else [],
-        "missing_scopes": missing_requested_scopes(creds or stored) if granted else list(GOOGLE_SCOPES),
+        "granted_products": granted_products(active) if granted else [],
+        "missing_scopes": missing_requested_scopes(active) if granted else list(GOOGLE_SCOPES),
     }
 
 

@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import copy
+import os
+import threading
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -15,10 +18,15 @@ PROJECT_ROOT = configured_data_dir() or PACKAGE_ROOT.parent
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.yaml"
 EXAMPLE_CONFIG_PATH = PACKAGE_ROOT.parent / "config.example.yaml"
 
-DEFAULT_GEMINI_TEXT_MODEL = "gemini-2.5-flash"
-DEFAULT_GEMINI_IMAGE_MODEL = "gemini-2.5-flash-image"
-DEFAULT_GEMINI_VIDEO_MODEL = "veo-2.0-generate-001"
-DEFAULT_GEMINI_AUDIO_MODEL = "lyria-3-clip-preview"
+_INITIAL_PROJECT_ROOT = PROJECT_ROOT
+_INITIAL_CONFIG_PATH = DEFAULT_CONFIG_PATH
+_CONFIG_LOCK = threading.RLock()
+
+# Model slots start empty until selected via live catalog / tier recommendation.
+DEFAULT_GEMINI_TEXT_MODEL = ""
+DEFAULT_GEMINI_IMAGE_MODEL = ""
+DEFAULT_GEMINI_VIDEO_MODEL = ""
+DEFAULT_GEMINI_AUDIO_MODEL = ""
 
 _DEPRECATED_BACKENDS = frozenset(
     {
@@ -37,10 +45,11 @@ DEFAULTS: dict[str, Any] = {
         "provider": "gemini",
     },
     "gemini": {
-        "text_model": DEFAULT_GEMINI_TEXT_MODEL,
-        "image_model": DEFAULT_GEMINI_IMAGE_MODEL,
-        "video_model": DEFAULT_GEMINI_VIDEO_MODEL,
-        "audio_model": DEFAULT_GEMINI_AUDIO_MODEL,
+        "text_model": "",
+        "image_model": "",
+        "video_model": "",
+        "audio_model": "",
+        "audio_unavailable": False,
         "api_key": None,  # set via Control Panel → saved in config.yaml
         "google_search": True,
         # When google_search is on: Pass 1 extract + Pass 2 verify at temperature 0
@@ -106,6 +115,18 @@ UI_FONT_SIZE_MAX = 22
 UI_FONT_SIZE_DEFAULT = 13
 
 
+def _active_project_root() -> Path:
+    if PROJECT_ROOT != _INITIAL_PROJECT_ROOT:
+        return PROJECT_ROOT
+    return configured_data_dir() or PROJECT_ROOT
+
+
+def _active_config_path() -> Path:
+    if DEFAULT_CONFIG_PATH != _INITIAL_CONFIG_PATH:
+        return DEFAULT_CONFIG_PATH
+    return _active_project_root() / "config.yaml"
+
+
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     result = copy.deepcopy(base)
     for key, value in override.items():
@@ -120,7 +141,7 @@ def expand_path(path_str: str) -> Path:
     """Resolve ~ and relative paths (relative → project root)."""
     p = Path(path_str).expanduser()
     if not p.is_absolute():
-        p = PROJECT_ROOT / p
+        p = _active_project_root() / p
     return p.resolve()
 
 
@@ -150,13 +171,8 @@ def _coerce_gemini_backend(cfg: dict[str, Any]) -> None:
 
 
 def normalize_gemini_cfg(section: dict[str, Any] | None) -> dict[str, Any]:
-    """Normalize Gemini keys and remap shut-down model ids."""
+    """Normalize Gemini keys and clear/remap shut-down model ids without hardcoded defaults."""
     from .gemini_provider import (
-        DEFAULT_GEMINI_AUDIO_MODEL,
-        DEFAULT_GEMINI_IMAGE_MODEL,
-        DEFAULT_GEMINI_TEXT_MODEL,
-        DEFAULT_GEMINI_VIDEO_MODEL,
-        _gemini_model_id,
         learned_retired_aliases,
         merged_retired_aliases,
         normalize_gemini_model,
@@ -166,57 +182,45 @@ def normalize_gemini_cfg(section: dict[str, Any] | None) -> dict[str, Any]:
     raw_key = (out.get("api_key") or "").strip()
     out["api_key"] = raw_key or None
     aliases = merged_retired_aliases(out)
-    text = normalize_gemini_model(
-        out.get("text_model") or DEFAULT_GEMINI_TEXT_MODEL,
-        retired_aliases=aliases,
-    )
-    image_raw = _gemini_model_id(out.get("image_model") or DEFAULT_GEMINI_IMAGE_MODEL)
-    image = (
-        aliases.get(image_raw)
-        or aliases.get(image_raw.lower())
-        or image_raw
-        or DEFAULT_GEMINI_IMAGE_MODEL
-    )
-    video = _gemini_model_id(out.get("video_model") or "") or DEFAULT_GEMINI_VIDEO_MODEL
-    video = aliases.get(video) or aliases.get(video.lower()) or video
-    audio = _gemini_model_id(out.get("audio_model") or "") or DEFAULT_GEMINI_AUDIO_MODEL
-    audio = aliases.get(audio) or aliases.get(audio.lower()) or audio
-    out["text_model"] = text
-    out["image_model"] = image
-    out["video_model"] = video
-    out["audio_model"] = audio
+    for slot in ("text_model", "image_model", "video_model", "audio_model"):
+        raw_val = str(out.get(slot) or "").strip()
+        out[slot] = normalize_gemini_model(raw_val, retired_aliases=aliases) if raw_val else ""
+    out["audio_unavailable"] = bool(out.get("audio_unavailable", False))
     out["retired_model_aliases"] = learned_retired_aliases(out)
     return out
 
 
 def load_config() -> dict[str, Any]:
-    """Merge defaults ← config.yaml ← optional config.local.yaml."""
-    cfg = copy.deepcopy(DEFAULTS)
+    """Merge defaults ← config.yaml ← optional config.local.yaml (thread-safe)."""
+    with _CONFIG_LOCK:
+        cfg = copy.deepcopy(DEFAULTS)
+        cfg_path = _active_config_path()
+        local_path = cfg_path.parent / "config.local.yaml"
 
-    for path in (DEFAULT_CONFIG_PATH, PROJECT_ROOT / "config.local.yaml"):
-        cfg = _deep_merge(cfg, _load_yaml(path))
+        for path in (cfg_path, local_path):
+            cfg = _deep_merge(cfg, _load_yaml(path))
 
-    _coerce_gemini_backend(cfg)
-    cfg["gemini"] = normalize_gemini_cfg(cfg.get("gemini"))
-    cfg["google_workspace"] = normalize_google_workspace_cfg(cfg)
+        _coerce_gemini_backend(cfg)
+        cfg["gemini"] = normalize_gemini_cfg(cfg.get("gemini"))
+        cfg["google_workspace"] = normalize_google_workspace_cfg(cfg)
 
-    paths = cfg.setdefault("paths", {})
-    if not paths.get("archives"):
-        paths["archives"] = DEFAULTS["paths"]["archives"]
-    paths["media"] = normalize_media_folder(paths.get("media"))
-    paths["exports"] = normalize_exports_folder(paths.get("exports"))
-    if not paths.get("prompts"):
-        paths["prompts"] = DEFAULTS["paths"]["prompts"]
-    ui = cfg.setdefault("ui", {})
-    if isinstance(ui, dict):
-        ui["studio_basis_width"] = normalize_studio_basis_width(
-            ui.get("studio_basis_width")
-        )
-        ui["lineage_pane_width"] = normalize_lineage_pane_width(
-            ui.get("lineage_pane_width")
-        )
-        ui["ui_font_size"] = normalize_ui_font_size(ui.get("ui_font_size"))
-    return cfg
+        paths = cfg.setdefault("paths", {})
+        if not paths.get("archives"):
+            paths["archives"] = DEFAULTS["paths"]["archives"]
+        paths["media"] = normalize_media_folder(paths.get("media"))
+        paths["exports"] = normalize_exports_folder(paths.get("exports"))
+        if not paths.get("prompts"):
+            paths["prompts"] = DEFAULTS["paths"]["prompts"]
+        ui = cfg.setdefault("ui", {})
+        if isinstance(ui, dict):
+            ui["studio_basis_width"] = normalize_studio_basis_width(
+                ui.get("studio_basis_width")
+            )
+            ui["lineage_pane_width"] = normalize_lineage_pane_width(
+                ui.get("lineage_pane_width")
+            )
+            ui["ui_font_size"] = normalize_ui_font_size(ui.get("ui_font_size"))
+        return cfg
 
 
 def is_legacy_gmail_token_path(rel: str) -> bool:
@@ -228,6 +232,16 @@ def is_legacy_app_token_path(rel: str) -> bool:
     """True for tokens stored under the pre-rename app folder."""
     posix = Path(str(rel).replace("\\", "/")).as_posix()
     return posix == ".retro-98-ai-creator" or posix.startswith(".retro-98-ai-creator/")
+
+
+def _is_bogus_credentials_path(raw: str | None) -> bool:
+    text = str(raw or "").strip()
+    if not text:
+        return False
+    if text == "Stored in app vault":
+        return True
+    name = Path(text.replace("\\", "/")).name.lower()
+    return name in {"google_workspace_token.json", "gmail_token.json"}
 
 
 def normalize_google_workspace_cfg(cfg: dict[str, Any] | None) -> dict[str, Any]:
@@ -249,8 +263,14 @@ def normalize_google_workspace_cfg(cfg: dict[str, Any] | None) -> dict[str, Any]
     token_rel = str(workspace.get("token_path") or "")
     if is_legacy_gmail_token_path(token_rel) or is_legacy_app_token_path(token_rel):
         workspace["token_path"] = DEFAULTS["google_workspace"]["token_path"]
-    if workspace.get("credentials_path") == "":
-        workspace["credentials_path"] = None
+    cred_raw = workspace.get("credentials_path")
+    if cred_raw == "" or _is_bogus_credentials_path(cred_raw):
+        default_client = expand_path(".synthetic-text-extruder/google_oauth_client.json")
+        workspace["credentials_path"] = (
+            ".synthetic-text-extruder/google_oauth_client.json"
+            if default_client.is_file()
+            else None
+        )
     return workspace
 
 
@@ -269,59 +289,96 @@ def _apply_api_key_update(updates: dict[str, Any], section: str) -> None:
 
 
 def save_config(updates: dict[str, Any], existing: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Persist Control Panel changes to the project config.yaml."""
-    current = existing or load_config()
-    updates = copy.deepcopy(updates)
+    """Atomically persist Control Panel changes to config.yaml (thread-safe)."""
+    with _CONFIG_LOCK:
+        cfg_path = _active_config_path()
+        if cfg_path.is_file():
+            disk_cfg = load_config()
+            if existing:
+                # Start from existing, then overlay disk_cfg so a stale in-memory
+                # snapshot on another thread never wipes a saved API key or setting.
+                current = _deep_merge(copy.deepcopy(existing), disk_cfg)
+                if not current.get("gemini", {}).get("api_key") and (
+                    (existing.get("gemini") or {}).get("api_key")
+                ):
+                    current["gemini"]["api_key"] = existing["gemini"]["api_key"]
+            else:
+                current = disk_cfg
+        else:
+            current = copy.deepcopy(existing) if existing else load_config()
 
-    _apply_api_key_update(updates, "gemini")
+        updates_copy = copy.deepcopy(updates)
+        _apply_api_key_update(updates_copy, "gemini")
+        # Prevent a blank/token-path credentials_path from wiping an imported client JSON
+        gw_upd = updates_copy.get("google_workspace")
+        if isinstance(gw_upd, dict) and "credentials_path" in gw_upd:
+            raw_cred = gw_upd.get("credentials_path")
+            if _is_bogus_credentials_path(raw_cred):
+                gw_upd = dict(gw_upd)
+                gw_upd.pop("credentials_path", None)
+                updates_copy["google_workspace"] = gw_upd
 
-    merged = _deep_merge(current, updates)
-    _coerce_gemini_backend(merged)
-    paths = merged.setdefault("paths", {})
-    paths.pop("media_resolved", None)
-    paths.pop("exports_resolved", None)
-    paths["media"] = normalize_media_folder(paths.get("media"))
-    paths["exports"] = normalize_exports_folder(paths.get("exports"))
-    ui_out = dict(merged.get("ui") or {})
-    ui_out["studio_basis_width"] = normalize_studio_basis_width(
-        ui_out.get("studio_basis_width")
-    )
-    ui_out["lineage_pane_width"] = normalize_lineage_pane_width(
-        ui_out.get("lineage_pane_width")
-    )
-    ui_out["ui_font_size"] = normalize_ui_font_size(ui_out.get("ui_font_size"))
+        merged = _deep_merge(current, updates_copy)
+        _coerce_gemini_backend(merged)
+        paths = merged.setdefault("paths", {})
+        paths.pop("media_resolved", None)
+        paths.pop("exports_resolved", None)
+        paths["media"] = normalize_media_folder(paths.get("media"))
+        paths["exports"] = normalize_exports_folder(paths.get("exports"))
+        ui_out = dict(merged.get("ui") or {})
+        ui_out["studio_basis_width"] = normalize_studio_basis_width(
+            ui_out.get("studio_basis_width")
+        )
+        ui_out["lineage_pane_width"] = normalize_lineage_pane_width(
+            ui_out.get("lineage_pane_width")
+        )
+        ui_out["ui_font_size"] = normalize_ui_font_size(ui_out.get("ui_font_size"))
 
-    gemini_out = normalize_gemini_cfg(merged.get("gemini") or {})
-    prompt_out = dict(merged.get("prompt") or {})
-    prompt_out.setdefault("extra_instructions", "")
-    workspace_out = normalize_google_workspace_cfg(merged)
+        gemini_out = normalize_gemini_cfg(merged.get("gemini") or {})
+        prompt_out = dict(merged.get("prompt") or {})
+        prompt_out.setdefault("extra_instructions", "")
+        workspace_out = normalize_google_workspace_cfg(merged)
 
-    to_write = {
-        "backend": {"provider": "gemini"},
-        "gemini": gemini_out,
-        "prompt": prompt_out,
-        "google_workspace": workspace_out,
-        "ui": ui_out,
-        "paths": {
-            "archives": paths.get("archives") or DEFAULTS["paths"]["archives"],
-            "media": paths.get("media") or DEFAULTS["paths"]["media"],
-            "exports": paths.get("exports") or DEFAULTS["paths"]["exports"],
-            "prompts": paths.get("prompts") or DEFAULTS["paths"]["prompts"],
-        },
-    }
-    DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with DEFAULT_CONFIG_PATH.open("w", encoding="utf-8") as fh:
-        yaml.safe_dump(to_write, fh, default_flow_style=False, sort_keys=False)
+        to_write = {
+            "backend": {"provider": "gemini"},
+            "gemini": gemini_out,
+            "prompt": prompt_out,
+            "google_workspace": workspace_out,
+            "ui": ui_out,
+            "paths": {
+                "archives": paths.get("archives") or DEFAULTS["paths"]["archives"],
+                "media": paths.get("media") or DEFAULTS["paths"]["media"],
+                "exports": paths.get("exports") or DEFAULTS["paths"]["exports"],
+                "prompts": paths.get("prompts") or DEFAULTS["paths"]["prompts"],
+            },
+        }
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = cfg_path.with_name(f".{cfg_path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            with tmp_path.open("w", encoding="utf-8") as fh:
+                yaml.safe_dump(to_write, fh, default_flow_style=False, sort_keys=False)
+                fh.flush()
+                try:
+                    os.fsync(fh.fileno())
+                except OSError:
+                    pass
+            os.replace(tmp_path, cfg_path)
+        finally:
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
 
-    merged["backend"] = {"provider": "gemini"}
-    merged["gemini"] = gemini_out
-    merged["prompt"] = prompt_out
-    merged["google_workspace"] = workspace_out
-    merged.pop("gmail", None)
-    merged.pop("openrouter", None)
-    merged.pop("huggingface", None)
-    merged["ui"] = ui_out
-    return merged
+        merged["backend"] = {"provider": "gemini"}
+        merged["gemini"] = gemini_out
+        merged["prompt"] = prompt_out
+        merged["google_workspace"] = workspace_out
+        merged.pop("gmail", None)
+        merged.pop("openrouter", None)
+        merged.pop("huggingface", None)
+        merged["ui"] = ui_out
+        return merged
 
 
 def normalize_ui_font_size(raw: Any) -> int:
@@ -353,15 +410,16 @@ def normalize_lineage_pane_width(raw: Any) -> int:
 
 def _normalize_project_folder(raw: str | None, default: str) -> str:
     """Return a portable default folder name or an absolute folder path."""
+    root = _active_project_root()
     text = str(raw or "").strip() or default
     path = Path(text).expanduser()
     if not path.is_absolute():
-        path = PROJECT_ROOT / path
+        path = root / path
     try:
         resolved = path.resolve()
     except OSError:
         return text
-    default_resolved = (PROJECT_ROOT / default).resolve()
+    default_resolved = (root / default).resolve()
     if resolved == default_resolved:
         return default
     return str(resolved)
