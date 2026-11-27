@@ -347,7 +347,7 @@
             <nav class="settings-nav" id="settings-nav" aria-label="Settings pages">
               <button type="button" class="settings-nav-item" data-settings-page="models" aria-current="page">Models</button>
               <button type="button" class="settings-nav-item" data-settings-page="generation">Generation</button>
-              <button type="button" class="settings-nav-item" data-settings-page="google">Google</button>
+              <button type="button" class="settings-nav-item" data-settings-page="workspace">Workspace</button>
               <button type="button" class="settings-nav-item" data-settings-page="storage">Storage</button>
               <button type="button" class="settings-nav-item" data-settings-page="appearance">Appearance</button>
             </nav>
@@ -358,7 +358,7 @@
                   <p class="hint">
                     CREATE, extract, Search, Veo, and Lyria use a
                     <strong>Gemini API key</strong> — not the Workspace OAuth token
-                    on the Google page. Get a key at
+                    on the Workspace page. Get a key at
                     <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer">aistudio.google.com/apikey</a>.
                     Paste it below and click <strong>Save API key</strong>
                     (also stored when you leave this page). Studio picks the
@@ -487,34 +487,7 @@
                 </fieldset>
               </section>
 
-              <section id="control-pane-google" class="control-pane" data-control-pane="google" hidden>
-                <fieldset id="gemini-api-settings">
-                  <legend>Gemini API</legend>
-                  <p class="hint">
-                    Generation uses this API key (stored in <code>config.yaml</code>).
-                    The OAuth client below is only for Gmail, Drive, Docs, Calendar,
-                    and Tasks tools — it does not replace the key.
-                    Get a key at
-                    <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer">aistudio.google.com/apikey</a>.
-                  </p>
-                  <div class="field-row-stacked">
-                    <label for="gemini-key-google">
-                      <span>Gemini API key</span>
-                      <span class="label-hint" id="gemini-key-google-badge">Not set</span>
-                    </label>
-                    <input
-                      id="gemini-key-google"
-                      type="password"
-                      autocomplete="off"
-                      spellcheck="false"
-                      placeholder="Paste Gemini API key"
-                    />
-                  </div>
-                  <div class="form-actions">
-                    <button type="button" id="btn-save-gemini-key-google">Save API key</button>
-                  </div>
-                  <p class="hint" id="gemini-key-google-status"></p>
-                </fieldset>
+              <section id="control-pane-workspace" class="control-pane" data-control-pane="workspace" hidden>
                 <fieldset id="google-workspace-settings">
                   <legend>Google Workspace</legend>
                   <p class="hint">
@@ -1185,6 +1158,6 @@
   <script src="catalog.js"></script>
   <script src="image_edit.js"></script>
   <script src="android-bridge.js?v=android2"></script>
-  <script src="app.js?v=modern29"></script>
+  <script src="app.js?v=modern30"></script>
 </body>
 </html>

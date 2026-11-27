@@ -163,9 +163,10 @@ def test_settings_html_exposes_gemini_api_key_fields():
         encoding="utf-8"
     )
     assert 'id="gemini-key"' in html
-    assert 'id="gemini-key-google"' in html
     assert 'id="btn-save-gemini-key"' in html
-    assert 'id="btn-save-gemini-key-google"' in html
+    assert 'id="gemini-key-google"' not in html
+    assert 'id="gemini-api-settings"' not in html
+    assert 'data-settings-page="workspace">Workspace</button>' in html
 
 
 def test_settings_html_exposes_library_exports_and_lineage():
