@@ -1,88 +1,16 @@
-"""Recommend Text / Image / Video / Audio models for Control Panel from live catalogs."""
+"""Recommend Text / Image / Video / Audio models from Google's live catalog."""
 
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 CRITERIA = ("economical", "balanced", "quality")
 
-# Preference order when Google's catalog has no prices (first match in live list wins).
-_GEMINI_PREFS: dict[str, dict[str, tuple[str, ...]]] = {
-    "economical": {
-        "text": (
-            "gemini-3.1-flash-lite",
-            "gemini-flash-lite-latest",
-            "gemini-2.5-flash",
-            "gemini-flash-latest",
-        ),
-        "image": (
-            "gemini-2.5-flash-image",
-            "gemini-2.5-flash-preview-image-generation",
-            "imagen-3.0-generate-002",
-        ),
-        "video": (
-            "veo-2.0-generate-001",
-            "veo-2.0-generate-exp",
-            "veo-3.0-generate-001",
-        ),
-        "audio": (
-            "lyria-3-clip-preview",
-            "lyria-3.5",
-            "lyria-3-pro-preview",
-        ),
-    },
-    "balanced": {
-        "text": (
-            "gemini-2.5-flash",
-            "gemini-flash-latest",
-            "gemini-3.1-flash-lite",
-            "gemini-2.5-pro",
-        ),
-        "image": (
-            "gemini-2.5-flash-image",
-            "gemini-2.5-flash-preview-image-generation",
-            "gemini-3.1-flash-image-preview",
-            "imagen-3.0-generate-002",
-        ),
-        "video": (
-            "veo-2.0-generate-001",
-            "veo-3.0-generate-001",
-            "veo-3.1-generate-preview",
-        ),
-        "audio": (
-            "lyria-3.5",
-            "lyria-3-pro-preview",
-            "lyria-3-clip-preview",
-        ),
-    },
-    "quality": {
-        "text": (
-            "gemini-2.5-pro",
-            "gemini-pro-latest",
-            "gemini-2.5-flash",
-            "gemini-flash-latest",
-        ),
-        "image": (
-            "gemini-3.1-flash-image-preview",
-            "imagen-4.0-generate-001",
-            "imagen-3.0-generate-002",
-            "gemini-2.5-flash-image",
-        ),
-        "video": (
-            "veo-3.1-generate-preview",
-            "veo-3.0-generate-001",
-            "veo-2.0-generate-001",
-        ),
-        "audio": (
-            "lyria-3.5",
-            "lyria-3-pro-preview",
-            "lyria-3-clip-preview",
-        ),
-    },
-}
+_VERSION_RE = re.compile(r"(\d+)(?:\.(\d+))?")
 
 
 def normalize_criteria(value: str | None) -> str:
@@ -118,22 +46,66 @@ def normalize_criteria(value: str | None) -> str:
     return out
 
 
-def recommend_models_for_config(
-    config: dict[str, Any],
-    criteria: str,
-    *,
-    provider: str | None = None,
-) -> dict[str, Any]:
-    """
-    Fetch Gemini's live catalog and pick Text / Image / Video models.
+def _extract_version(model_id: str) -> tuple[int, int]:
+    """Extract highest (major, minor) generation version token from a model id."""
+    best = (0, 0)
+    for m in _VERSION_RE.finditer(model_id or ""):
+        maj = int(m.group(1))
+        # Ignore 8-digit date stamps like 20250617 or 3-digit revision suffixes like 001
+        if maj > 20 or (m.group(2) is None and len(m.group(1)) >= 3):
+            continue
+        minor = int(m.group(2)) if m.group(2) is not None else 0
+        if (maj, minor) > best:
+            best = (maj, minor)
+    return best
 
-    Returns ``{ok, provider, criteria, picks, models, labels, message}``.
-    ``models`` is a merged picker list (live + picks) the UI should reload.
-    ``provider`` is ignored (Gemini-only).
-    """
-    crit = normalize_criteria(criteria)
-    _ = provider
-    return _recommend_gemini(config, crit)
+
+def _score_live_model(item: dict[str, str], modality: str, criteria: str) -> tuple:
+    """Return a comparable tuple (higher is better) for dynamic live model selection."""
+    mid = str(item.get("repo_id") or "").strip().lower()
+    ver = _extract_version(mid)
+    is_lite = "lite" in mid or "nano" in mid
+    is_fast = "fast" in mid
+    is_clip = "clip" in mid
+    is_flash = "flash" in mid and not is_lite
+    is_pro = "pro" in mid
+    is_ultra = "ultra" in mid
+    is_exp = "-exp" in mid or mid.endswith("exp")
+    is_latest_alias = mid.endswith("-latest")
+    stability = 0 if is_exp else (1 if is_latest_alias else 2)
+
+    if criteria == "economical":
+        if modality == "text":
+            tier = 3 if is_lite else (2 if is_flash else (1 if not is_pro and not is_ultra else 0))
+        elif modality == "image":
+            tier = 3 if (is_fast or is_lite or "flash-image" in mid) else (2 if not is_ultra and not is_pro else 1)
+        elif modality == "video":
+            tier = 3 if is_fast else (2 if not is_ultra and not is_pro else 1)
+        else:  # audio
+            tier = 3 if (is_clip or is_lite or is_fast) else 2
+        return (tier, ver, stability, mid)
+
+    if criteria == "quality":
+        if modality == "text":
+            tier = 4 if is_ultra else (3 if is_pro else (2 if is_flash else 1))
+        elif modality == "image":
+            tier = 4 if is_ultra else (3 if (is_pro or "imagen" in mid) else (2 if "flash-image" in mid else 1))
+        elif modality == "video":
+            tier = 4 if is_ultra else (3 if not is_fast else 2)
+        else:  # audio
+            tier = 3 if not is_clip else 1
+        return (ver if modality in {"image", "video"} else (tier,), tier, ver, stability, mid)
+
+    # balanced
+    if modality == "text":
+        tier = 4 if (is_flash and not is_pro) else (3 if is_pro else (2 if is_lite else 1))
+    elif modality == "image":
+        tier = 4 if ("flash-image" in mid and not is_ultra) else (3 if not is_ultra else 2)
+    elif modality == "video":
+        tier = 4 if (not is_fast and not is_ultra) else (3 if is_fast else 2)
+    else:  # audio
+        tier = 3 if not is_clip else 2
+    return (tier, ver, stability, mid)
 
 
 def _by_modality(models: list[dict[str, str]]) -> dict[str, list[dict[str, str]]]:
@@ -162,100 +134,90 @@ def _pick_from_prefs(
         hit = lower_map.get(pref.lower())
         if hit:
             return hit
-        # Substring fallback (e.g. prefer any *flash-lite*)
         for mid, row in ids.items():
             if pref.lower() in mid.lower():
                 return row
     return available[0] if available else None
 
 
-def _ensure_pick_in_models(
-    models: list[dict[str, str]],
-    picks: dict[str, str],
-) -> list[dict[str, str]]:
-    """Guarantee recommended ids appear in the picker list."""
-    seen = {str(m.get("repo_id") or "").strip() for m in models}
-    out = list(models)
-    for mod, mid in picks.items():
-        mid = (mid or "").strip()
-        if not mid or mid in seen:
-            continue
-        seen.add(mid)
-        out.append(
-            {
-                "repo_id": mid,
-                "label": mid,
-                "notes": "recommended",
-                "modality": mod,
-            }
-        )
-    return out
+def _pick_best_live_model(
+    available: list[dict[str, str]],
+    modality: str,
+    criteria: str,
+) -> dict[str, str] | None:
+    if not available:
+        return None
+    return max(available, key=lambda item: _score_live_model(item, modality, criteria))
 
 
-def _recommend_gemini(config: dict[str, Any], criteria: str) -> dict[str, Any]:
+def recommend_models_for_config(
+    config: dict[str, Any],
+    criteria: str,
+    *,
+    provider: str | None = None,
+    live_models: list[dict[str, str]] | None = None,
+) -> dict[str, Any]:
+    """
+    Fetch Gemini's live catalog and pick Text / Image / Video / Audio models dynamically.
+
+    Never falls back to a static list of models.
+    """
     from .gemini_provider import (
-        DEFAULT_GEMINI_AUDIO_MODEL,
-        DEFAULT_GEMINI_IMAGE_MODEL,
-        DEFAULT_GEMINI_TEXT_MODEL,
-        DEFAULT_GEMINI_VIDEO_MODEL,
-        SUGGESTED_GEMINI_MODELS,
         list_available_gemini_models,
         merged_retired_aliases,
         normalize_gemini_model,
         resolve_api_key,
     )
 
-    key = resolve_api_key(config.get("gemini") or {})
-    aliases = merged_retired_aliases(config.get("gemini") or {})
-    source = "fallback"
-    models: list[dict[str, str]]
-    if key:
-        try:
-            models = list_available_gemini_models(key, retired_aliases=aliases)
-            source = "live"
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Gemini recommend list failed: %s", exc)
-            models = [
-                m
-                for m in SUGGESTED_GEMINI_MODELS
-                if (m.get("repo_id") or "").lower() not in {k.lower() for k in aliases}
-            ]
-    else:
+    crit = normalize_criteria(criteria)
+    _ = provider
+    gemini_cfg = (config or {}).get("gemini") or {}
+    aliases = merged_retired_aliases(gemini_cfg)
+
+    if live_models is not None:
         models = [
             m
-            for m in SUGGESTED_GEMINI_MODELS
+            for m in live_models
             if (m.get("repo_id") or "").lower() not in {k.lower() for k in aliases}
         ]
+    else:
+        key = resolve_api_key(gemini_cfg)
+        if not key:
+            return {
+                "ok": False,
+                "provider": "gemini",
+                "criteria": crit,
+                "error": "Save your Gemini API key first so the app can fetch Google's live model catalog.",
+                "models": [],
+                "picks": {},
+                "labels": {},
+                "availableModalities": [],
+            }
+        models = list_available_gemini_models(key, retired_aliases=aliases)
 
     buckets = _by_modality(models)
-    prefs = _GEMINI_PREFS[criteria]
-    defaults = {
-        "text": DEFAULT_GEMINI_TEXT_MODEL,
-        "image": DEFAULT_GEMINI_IMAGE_MODEL,
-        "video": DEFAULT_GEMINI_VIDEO_MODEL,
-        "audio": DEFAULT_GEMINI_AUDIO_MODEL,
-    }
+    available_modalities = [mod for mod in ("text", "image", "video", "audio") if buckets[mod]]
     picks: dict[str, str] = {}
     labels: dict[str, str] = {}
     for mod in ("text", "image", "video", "audio"):
-        row = _pick_from_prefs(buckets[mod], prefs[mod])
+        row = _pick_best_live_model(buckets[mod], mod, crit)
         mid = normalize_gemini_model(
-            (row or {}).get("repo_id") or defaults[mod],
+            (row or {}).get("repo_id") or "",
             retired_aliases=aliases,
         )
         picks[mod] = mid
-        labels[mod] = str((row or {}).get("label") or mid)
+        labels[mod] = str((row or {}).get("label") or mid) if mid else ""
 
-    models = _ensure_pick_in_models(models, picks)
     return {
         "ok": True,
         "provider": "gemini",
-        "criteria": criteria,
-        "source": source,
+        "criteria": crit,
+        "source": "live",
         "picks": picks,
         "labels": labels,
         "models": models,
-        "message": _summary_message("Gemini", criteria, labels),
+        "availableModalities": available_modalities,
+        "message": _summary_message("Gemini", crit, labels),
     }
 
 

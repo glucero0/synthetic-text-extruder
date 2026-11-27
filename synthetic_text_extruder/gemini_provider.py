@@ -32,26 +32,29 @@ logger = logging.getLogger(__name__)
 
 ProgressCallback = Callable[[Any], None]
 
-DEFAULT_GEMINI_TEXT_MODEL = "gemini-2.5-flash"
-DEFAULT_GEMINI_IMAGE_MODEL = "gemini-2.5-flash-image"
-DEFAULT_GEMINI_VIDEO_MODEL = "veo-2.0-generate-001"
-DEFAULT_GEMINI_AUDIO_MODEL = "lyria-3-clip-preview"
+# Model slots are discovered dynamically from Google's live catalog (never hardcoded).
+DEFAULT_GEMINI_TEXT_MODEL = ""
+DEFAULT_GEMINI_IMAGE_MODEL = ""
+DEFAULT_GEMINI_VIDEO_MODEL = ""
+DEFAULT_GEMINI_AUDIO_MODEL = ""
 
-# Built-in shut-down / blocked ids. Learned aliases are merged from
-# config.yaml → gemini.retired_model_aliases at runtime (see merged_retired_aliases).
+RETIRED_SENTINEL = "__retired__"
+
+# Known shut-down / blocked ids hidden from live pickers and cleared from saved config.
+# Learned aliases are merged from config.yaml → gemini.retired_model_aliases at runtime.
 GEMINI_RETIRED_MODEL_ALIASES: dict[str, str] = {
-    "gemini-2.0-flash": "gemini-2.5-flash",
-    "gemini-2.0-flash-001": "gemini-2.5-flash",
-    # Flash-Lite: 2.0 and 2.5 are retired / blocked for new users → 3.1
-    "gemini-2.0-flash-lite": "gemini-3.1-flash-lite",
-    "gemini-2.0-flash-lite-001": "gemini-3.1-flash-lite",
-    "gemini-2.0-flash-lite-preview": "gemini-3.1-flash-lite",
-    "gemini-2.0-flash-lite-preview-02-05": "gemini-3.1-flash-lite",
-    "gemini-2.5-flash-lite": "gemini-3.1-flash-lite",
-    "gemini-2.5-flash-lite-preview": "gemini-3.1-flash-lite",
-    "gemini-2.5-flash-lite-preview-06-17": "gemini-3.1-flash-lite",
-    "gemini-2.5-flash-lite-preview-09-2025": "gemini-3.1-flash-lite",
-    "gemini-2.0-flash-preview-image-generation": DEFAULT_GEMINI_IMAGE_MODEL,
+    "gemini-2.0-flash": RETIRED_SENTINEL,
+    "gemini-2.0-flash-001": RETIRED_SENTINEL,
+    "gemini-2.0-flash-lite": RETIRED_SENTINEL,
+    "gemini-2.0-flash-lite-001": RETIRED_SENTINEL,
+    "gemini-2.0-flash-lite-preview": RETIRED_SENTINEL,
+    "gemini-2.0-flash-lite-preview-02-05": RETIRED_SENTINEL,
+    "gemini-2.5-flash-lite": RETIRED_SENTINEL,
+    "gemini-2.5-flash-lite-preview": RETIRED_SENTINEL,
+    "gemini-2.5-flash-lite-preview-06-17": RETIRED_SENTINEL,
+    "gemini-2.5-flash-lite-preview-09-2025": RETIRED_SENTINEL,
+    "gemini-2.0-flash-preview-image-generation": RETIRED_SENTINEL,
+    "veo-2.0-generate-001": RETIRED_SENTINEL,
 }
 
 _MODEL_IN_ERR_RE = re.compile(
@@ -107,19 +110,30 @@ def extract_model_from_gemini_error(exc: BaseException | str) -> str | None:
     return _gemini_model_id(matches[-1])
 
 
-def suggest_replacement_for_retired(model_id: str) -> tuple[str, str]:
-    """Return (replacement_model_id, modality)."""
-    mid = _gemini_model_id(model_id).lower()
-    modality = classify_model_modality(mid) or "text"
-    if modality == "image":
-        return DEFAULT_GEMINI_IMAGE_MODEL, "image"
-    if modality == "video":
-        return DEFAULT_GEMINI_VIDEO_MODEL, "video"
-    if modality == "audio":
-        return DEFAULT_GEMINI_AUDIO_MODEL, "audio"
-    if "lite" in mid:
-        return "gemini-3.1-flash-lite", "text"
-    return DEFAULT_GEMINI_TEXT_MODEL, "text"
+def suggest_replacement_for_retired(
+    model_id: str,
+    *,
+    config: dict[str, Any] | None = None,
+) -> tuple[str, str]:
+    """Return ``(live_replacement_or_empty, modality)`` using Google's live catalog when possible."""
+    mid = _gemini_model_id(model_id)
+    modality = classify_model_modality(mid.lower()) or "text"
+    cfg = dict(config or {})
+    g = dict(cfg.get("gemini") or {})
+    if resolve_api_key(g):
+        try:
+            from .recommend_models import recommend_models_for_config
+
+            temp_learned = learned_retired_aliases(g)
+            temp_learned[mid] = RETIRED_SENTINEL
+            g_temp = {**g, "retired_model_aliases": temp_learned}
+            rec = recommend_models_for_config({**cfg, "gemini": g_temp}, "balanced")
+            cand = _gemini_model_id((rec.get("picks") or {}).get(modality) or "")
+            if cand and cand.lower() != mid.lower():
+                return cand, modality
+        except Exception:  # noqa: BLE001
+            logger.debug("Live replacement lookup failed for %s", mid, exc_info=True)
+    return "", modality
 
 
 def learn_retired_gemini_model(
@@ -129,25 +143,25 @@ def learn_retired_gemini_model(
     replacement: str | None = None,
 ) -> dict[str, Any]:
     """
-    Persist a retired model alias, clear the active Settings slot if it
-    matched, and return UI-facing details.
+    Persist a retired model alias, switch or clear the active Settings slot,
+    and return UI-facing details.
     """
     from .config import save_config
 
     mid = _gemini_model_id(model_id)
     if not mid:
         raise ValueError("Missing retired model id")
-    repl, modality = suggest_replacement_for_retired(mid)
-    if replacement:
-        repl = _gemini_model_id(replacement) or repl
+    repl, modality = suggest_replacement_for_retired(mid, config=config)
+    if replacement is not None:
+        repl = _gemini_model_id(replacement)
 
-    # Don't alias a model to itself
-    if repl.lower() == mid.lower():
-        repl = DEFAULT_GEMINI_TEXT_MODEL if modality == "text" else repl
+    # Never alias a retired model to itself
+    if repl and repl.lower() == mid.lower():
+        repl = ""
 
     gemini = dict(config.get("gemini") or {})
     learned = learned_retired_aliases(gemini)
-    learned[mid] = repl
+    learned[mid] = repl or RETIRED_SENTINEL
     gemini["retired_model_aliases"] = learned
 
     slot = {
@@ -166,15 +180,19 @@ def learn_retired_gemini_model(
     logger.info(
         "Learned retired Gemini model %s → %s (slot %s switched=%s)",
         mid,
-        repl,
+        repl or "(cleared)",
         slot,
         switched,
     )
     msg = (
         f'Gemini model "{mid}" is retired or unavailable for this API key. '
         f"It was removed from the picker"
-        + (f' and {modality} was switched to "{repl}"' if switched else "")
-        + ". Open Settings → AI Model to confirm or choose another model."
+        + (
+            f' and {modality} was switched to "{repl}"'
+            if switched and repl
+            else (f" and {modality} was cleared" if switched else "")
+        )
+        + ". Open Settings → Models to confirm or choose another model."
     )
     return {
         "retired": mid,
@@ -186,80 +204,8 @@ def learn_retired_gemini_model(
     }
 
 
-SUGGESTED_GEMINI_MODELS: list[dict[str, str]] = [
-    {
-        "repo_id": "gemini-2.5-flash",
-        "label": "Gemini 2.5 Flash (default text)",
-        "notes": "Cheapest balanced text — Search + two-pass",
-        "modality": "text",
-    },
-    {
-        "repo_id": "gemini-3.1-flash-lite",
-        "label": "Gemini 3.1 Flash-Lite",
-        "notes": "Fastest / cheapest Flash-Lite (replaces 2.5 Flash-Lite)",
-        "modality": "text",
-    },
-    {
-        "repo_id": "gemini-2.5-pro",
-        "label": "Gemini 2.5 Pro",
-        "notes": "Higher quality text",
-        "modality": "text",
-    },
-    {
-        "repo_id": "gemini-flash-latest",
-        "label": "Gemini Flash (latest alias)",
-        "notes": "Google's current flash alias if available",
-        "modality": "text",
-    },
-    {
-        "repo_id": "gemini-2.5-flash-image",
-        "label": "Gemini 2.5 Flash Image (default)",
-        "notes": "Cheapest native image generation",
-        "modality": "image",
-    },
-    {
-        "repo_id": "gemini-3.1-flash-image-preview",
-        "label": "Gemini 3.1 Flash Image Preview",
-        "notes": "Newer image preview (usually costlier)",
-        "modality": "image",
-    },
-    {
-        "repo_id": "veo-2.0-generate-001",
-        "label": "Veo 2.0 Generate (default)",
-        "notes": "Cheaper text-to-video",
-        "modality": "video",
-    },
-    {
-        "repo_id": "veo-3.1-fast-generate-preview",
-        "label": "Veo 3.1 Fast Generate Preview",
-        "notes": "Faster Veo 3.1 preview",
-        "modality": "video",
-    },
-    {
-        "repo_id": "veo-3.1-generate-preview",
-        "label": "Veo 3.1 Generate Preview",
-        "notes": "Newer video preview (usually costlier)",
-        "modality": "video",
-    },
-    {
-        "repo_id": "lyria-3-clip-preview",
-        "label": "Lyria 3 Clip Preview (default music)",
-        "notes": "30-second clips — cheapest Lyria slot",
-        "modality": "audio",
-    },
-    {
-        "repo_id": "lyria-3.5",
-        "label": "Lyria 3.5 / Pro (full songs)",
-        "notes": "Full-length songs — current Pro-class Interactions id",
-        "modality": "audio",
-    },
-    {
-        "repo_id": "lyria-3-pro-preview",
-        "label": "Lyria 3 Pro Preview",
-        "notes": "Older full-song id — app retries lyria-3.5 if this is blocked",
-        "modality": "audio",
-    },
-]
+# Empty: the app never renders a static list of models; it always fetches Google's live catalog.
+SUGGESTED_GEMINI_MODELS: list[dict[str, str]] = []
 
 
 def _gemini_model_id(name: str | None) -> str:
@@ -480,13 +426,16 @@ def normalize_gemini_model(
     *,
     retired_aliases: dict[str, str] | None = None,
 ) -> str:
-    """Strip models/ prefix and remap shut-down Gemini ids to current replacements."""
+    """Strip models/ prefix and remap/clear shut-down Gemini ids."""
     name = _gemini_model_id(model_name)
     if not name:
-        return DEFAULT_GEMINI_TEXT_MODEL
+        return ""
     aliases = retired_aliases if retired_aliases is not None else GEMINI_RETIRED_MODEL_ALIASES
     remapped = aliases.get(name) or aliases.get(name.lower())
     if remapped:
+        if remapped == RETIRED_SENTINEL:
+            logger.info("Clearing retired Gemini model %s", name)
+            return ""
         logger.info("Remapping retired Gemini model %s → %s", name, remapped)
         return remapped
     return name
@@ -495,25 +444,43 @@ def normalize_gemini_model(
 def resolve_gemini_model_for_modality(
     gemini_cfg: dict[str, Any] | None, modality: str
 ) -> str:
-    """Pick the configured model id for text / image / video / audio."""
+    """Pick the configured model id for text / image / video / audio (empty if unset)."""
     cfg = gemini_cfg or {}
     aliases = merged_retired_aliases(cfg)
     mod = (modality or "text").lower().strip()
     if mod == "image":
-        raw = (cfg.get("image_model") or "").strip() or DEFAULT_GEMINI_IMAGE_MODEL
-        fallback = DEFAULT_GEMINI_IMAGE_MODEL
+        raw = (cfg.get("image_model") or "").strip()
     elif mod == "video":
-        raw = (cfg.get("video_model") or "").strip() or DEFAULT_GEMINI_VIDEO_MODEL
-        fallback = DEFAULT_GEMINI_VIDEO_MODEL
+        raw = (cfg.get("video_model") or "").strip()
     elif mod == "audio":
-        raw = (cfg.get("audio_model") or "").strip() or DEFAULT_GEMINI_AUDIO_MODEL
-        fallback = DEFAULT_GEMINI_AUDIO_MODEL
+        raw = (cfg.get("audio_model") or "").strip()
     else:
-        raw = (cfg.get("text_model") or "").strip() or DEFAULT_GEMINI_TEXT_MODEL
-        fallback = DEFAULT_GEMINI_TEXT_MODEL
-    name = _gemini_model_id(raw)
-    remapped = aliases.get(name) or aliases.get(name.lower())
-    return remapped or name or fallback
+        raw = (cfg.get("text_model") or "").strip()
+    return normalize_gemini_model(raw, retired_aliases=aliases)
+
+
+def ensure_gemini_model_for_modality(
+    gemini_cfg: dict[str, Any] | None, modality: str
+) -> str:
+    """Return configured model for ``modality``, or dynamically pick one from Google's live catalog."""
+    cfg = dict(gemini_cfg or {})
+    mod = (modality or "text").lower().strip()
+    chosen = resolve_gemini_model_for_modality(cfg, mod)
+    if chosen and (mod == "text" or (classify_model_modality(chosen) or "text") == mod):
+        return chosen
+    if resolve_api_key(cfg):
+        try:
+            from .recommend_models import recommend_models_for_config
+
+            rec = recommend_models_for_config({"gemini": cfg}, "balanced")
+            live_pick = _gemini_model_id((rec.get("picks") or {}).get(mod) or "")
+            if live_pick:
+                return live_pick
+        except Exception:  # noqa: BLE001
+            logger.debug("On-demand live model lookup failed for %s", mod, exc_info=True)
+    raise RuntimeError(
+        f"No Gemini {mod} model is selected. Open Settings → Models to choose your models."
+    )
 
 
 def resolve_api_key(gemini_cfg: dict[str, Any] | None = None) -> str | None:
@@ -735,6 +702,9 @@ def _generate_text_with_gemini(
         raise RuntimeError(
             "Gemini API key missing. Paste your key in Settings → AI Model (Gemini)."
         )
+    model_name = normalize_gemini_model(model_name) or ensure_gemini_model_for_modality(
+        gemini_cfg, "text"
+    )
 
     from .gemini_tools import normalize_tool_aliases
 

@@ -1050,15 +1050,23 @@
   /**
    * Recommend Models dialog — returns "economical" | "balanced" | "quality", or null if cancelled.
    */
-  function showRecommendModelsDialog() {
+  function showRecommendModelsDialog(opts) {
+    opts = opts || {};
     return new Promise((resolve) => {
       const overlay = $("#recommend-models-overlay");
+      const titleEl = $("#recommend-models-title");
+      const msgEl = $("#recommend-models-message");
       const okBtn = $("#recommend-models-ok");
       const cancelBtn = $("#recommend-models-cancel");
       if (!overlay || !okBtn || !cancelBtn) {
         resolve(null);
         return;
       }
+      const prevTitle = titleEl ? titleEl.textContent : "";
+      const prevMsg = msgEl ? msgEl.textContent : "";
+      if (titleEl && opts.title) titleEl.textContent = opts.title;
+      if (msgEl && opts.message) msgEl.textContent = opts.message;
+
       const balanced = $("#recommend-balanced");
       if (balanced) balanced.checked = true;
       overlay.hidden = false;
@@ -1066,6 +1074,8 @@
 
       const finish = (value) => {
         overlay.hidden = true;
+        if (titleEl) titleEl.textContent = prevTitle;
+        if (msgEl) msgEl.textContent = prevMsg;
         okBtn.removeEventListener("click", onOk);
         cancelBtn.removeEventListener("click", onCancel);
         resolve(value);
@@ -1083,78 +1093,111 @@
     });
   }
 
-  async function runRecommendModels(provider) {
-    const criteria = await showRecommendModelsDialog();
-    if (!criteria) return;
+  function hasMissingModelSettings(cfg) {
+    const g = (cfg && cfg.gemini) || {};
+    const core = ["text_model", "image_model", "video_model"];
+    if (core.some((k) => !String(g[k] || "").trim())) return true;
+    if (!String(g.audio_model || "").trim() && !g.audio_unavailable) return true;
+    return false;
+  }
 
+  async function applyTierRecommendation(criteria, opts) {
+    opts = opts || {};
+    const onlyMissing = !!opts.onlyMissing;
     const a = api();
     if (!a) {
       showToast("Python bridge not ready.");
-      return;
+      return false;
     }
-
-    const pretty =
-      criteria === "economical"
-        ? "Economical"
-        : criteria === "quality"
-          ? "Maximum quality"
-          : "Balanced";
-    beginBusy(
-      "Recommend Models",
-      "Finding " + pretty + " models from the live catalog…",
-      {
-        delayMs: 0,
-        percent: 20,
-        hint:
-          "Queries Google for Gemini Text / Image / Video models — not only the current picker lists.",
-      }
-    );
+    const banner = $("#models-loading-banner");
+    const bannerText = $("#models-loading-text");
+    if (bannerText) bannerText.textContent = "Fetching latest model list";
+    if (banner) banner.hidden = false;
+    beginBusy("Models", "Fetching latest model list", {
+      delayMs: 0,
+      spinner: true,
+      hint: "Querying Google's live catalog and configuring your model tier…",
+    });
 
     try {
-      const res = await a.recommend_models(criteria, "gemini");
+      const res = await a.recommend_models(
+        criteria,
+        "gemini",
+        onlyMissing,
+        true
+      );
       if (!res || !res.ok) {
         showToast((res && res.error) || "Could not recommend models.");
-        return;
+        return false;
       }
-      applyRecommendedModels(res);
-      showToast(res.message || "Models recommended.");
+      if (Array.isArray(res.models)) {
+        state.liveGeminiModels = res.models.slice();
+      }
+      if (res.config) {
+        state.config = res.config;
+      }
+      applyRecommendedModels(res, { config: state.config });
+      updateApiKeyIndicators();
+      showToast(res.message || "Models configured.");
       playUiSound("notify");
+      return true;
     } catch (err) {
       showToast("Recommend Models failed: " + err);
       playUiSound("error");
+      return false;
     } finally {
+      if (banner) banner.hidden = true;
       endBusy("Ready");
       requestAnimationFrame(() => syncDesktopScrollExtent());
     }
   }
 
-  function applyRecommendedModels(res) {
+  async function runRecommendModels(_provider) {
+    const criteria = await showRecommendModelsDialog();
+    if (!criteria) return;
+    if (!providerApiKeyReady()) {
+      state.pendingModelTier = criteria;
+      showToast("Paste and save your Gemini API key first to fetch live models.");
+      const first = geminiApiKeyInputs()[0];
+      if (first) first.focus();
+      return;
+    }
+    await applyTierRecommendation(criteria, { onlyMissing: false });
+  }
+
+  function applyRecommendedModels(res, opts) {
+    opts = opts || {};
     const picks = (res && res.picks) || {};
-    const models = (res && res.models) || [];
+    const savedGemini = (opts.config && opts.config.gemini) || {};
+    const models = (res && res.models) || state.liveGeminiModels || [];
     const provider = (res && res.provider) || "gemini";
 
     if (provider === "gemini") {
+      const textPick = savedGemini.text_model || picks.text || "";
+      const imagePick = savedGemini.image_model || picks.image || "";
+      const videoPick = savedGemini.video_model || picks.video || "";
+      const audioPick = savedGemini.audio_model || picks.audio || "";
       fillGeminiModalitySelect(
         $("#gemini-text-model"),
-        picks.text,
+        textPick,
         models,
         "text"
       );
       fillGeminiModalitySelect(
         $("#gemini-image-model"),
-        picks.image,
+        imagePick,
         models,
         "image"
       );
       fillGeminiModalitySelect(
         $("#gemini-video-model"),
-        picks.video,
+        videoPick,
         models,
         "video"
       );
       fillGeminiModalitySelect(
         $("#gemini-audio-model"),
-        picks.audio,
+        audioPick,
         models,
         "audio"
       );
@@ -1162,10 +1205,10 @@
         config: {
           backend: { provider: "gemini" },
           gemini: {
-            text_model: picks.text,
-            image_model: picks.image,
-            video_model: picks.video,
-            audio_model: picks.audio,
+            text_model: textPick,
+            image_model: imagePick,
+            video_model: videoPick,
+            audio_model: audioPick,
           },
         },
       });
@@ -1553,6 +1596,7 @@
   }
 
   let _settingsSaving = false;
+  let _queuedSaveOpts = null;
   let _settingsSaveTimer = null;
   let _studioBasisWidthSaveTimer = null;
 
@@ -1563,91 +1607,93 @@
       if (!opts.silent) showToast("Python bridge not ready.");
       return;
     }
-    if (_settingsSaving) return;
+    if (_settingsSaving) {
+      const prevSilent = _queuedSaveOpts ? _queuedSaveOpts.silent : true;
+      _queuedSaveOpts = Object.assign({}, _queuedSaveOpts || {}, opts, {
+        silent: Boolean(prevSilent && opts.silent),
+        applyDisplay: Boolean(
+          (_queuedSaveOpts && _queuedSaveOpts.applyDisplay) || opts.applyDisplay
+        ),
+      });
+      return;
+    }
     if (!opts.silent && !ensureApiKeyBeforeSave()) return;
     _settingsSaving = true;
     try {
+      if (opts.applyDisplay) applyDisplaySettingsFromControls();
 
-    if (opts.applyDisplay) applyDisplaySettingsFromControls();
+      const res = await a.save_settings(collectSettings());
 
-    const res = await a.save_settings(collectSettings());
-
-    if (res.config) {
-      state.config = res.config;
-      if (!opts.silent) {
-        try {
-          const boot = await a.get_bootstrap();
-          state.config = boot.config || res.config;
-          fillControlPanel(boot);
-        } catch (_) {
-          fillControlPanel({
-            config: res.config,
-            suggestedGeminiModels: [],
-            modelStatus: res.modelStatus,
-          });
-        }
-      }
-      updateApiKeyIndicators();
-      clearGeminiApiKeyInputsIfIdle();
-      syncStudioToolsPanel();
-    }
-
-    if (opts.silent) {
-      setProgress(res.message || "Settings saved");
-    } else {
-      showToast(res.message || "Saved");
-    }
-
-    const mediaMove = res.mediaMove;
-    if (res.ok && mediaMove && mediaMove.offered && mediaMove.count > 0) {
-      const go = await showConfirm(
-        "Move existing media?",
-        "Settings were saved.\n\n" +
-          "Move " +
-          mediaMove.count +
-          " existing media file(s) into the new folder?\n\n" +
-          "Yes — move the files and update Archives so Viewer still finds them.\n" +
-          "No — leave them where they are. New creations will use the new folder."
-      );
-      if (go) {
-        const moved = await a.relocate_media_files(mediaMove.source);
-        if (!moved.ok) {
-          showToast(moved.error || "Could not move media files");
-        } else {
-          if (Array.isArray(moved.creations)) {
-            state.creations = moved.creations;
-            if (state.active && state.active.id) {
-              const next = state.creations.find((c) => c.id === state.active.id);
-              if (next) renderDocument(next);
-            }
-            renderArchives();
+      if (res.config) {
+        state.config = res.config;
+        if (!opts.silent) {
+          try {
+            const boot = await a.get_bootstrap();
+            state.config = boot.config || res.config;
+            fillControlPanel(
+              Object.assign({}, boot, {
+                suggestedGeminiModels: state.liveGeminiModels || [],
+              })
+            );
+          } catch (_) {
+            fillControlPanel({
+              config: res.config,
+              suggestedGeminiModels: state.liveGeminiModels || [],
+              modelStatus: res.modelStatus,
+            });
           }
-          showToast(
-            moved.moved
-              ? "Moved " + moved.moved + " media file(s)."
-              : "No media files needed moving."
-          );
+        }
+        updateApiKeyIndicators();
+        clearGeminiApiKeyInputsIfIdle();
+        syncStudioToolsPanel();
+        updateStudioBackendLabel({ config: state.config });
+      }
+
+      if (opts.silent) {
+        setProgress(res.message || "Settings saved");
+      } else {
+        showToast(res.message || "Saved");
+      }
+
+      const mediaMove = res.mediaMove;
+      if (res.ok && mediaMove && mediaMove.offered && mediaMove.count > 0) {
+        const go = await showConfirm(
+          "Move existing media?",
+          "Settings were saved.\n\n" +
+            "Move " +
+            mediaMove.count +
+            " existing media file(s) into the new folder?\n\n" +
+            "Yes — move the files and update Archives so Viewer still finds them.\n" +
+            "No — leave them where they are. New creations will use the new folder."
+        );
+        if (go) {
+          const moved = await a.relocate_media_files(mediaMove.source);
+          if (!moved.ok) {
+            showToast(moved.error || "Could not move media files");
+          } else {
+            if (Array.isArray(moved.creations)) {
+              state.creations = moved.creations;
+              if (state.active && state.active.id) {
+                const next = state.creations.find((c) => c.id === state.active.id);
+                if (next) renderDocument(next);
+              }
+              renderArchives();
+            }
+            showToast(
+              moved.moved
+                ? "Moved " + moved.moved + " media file(s)."
+                : "No media files needed moving."
+            );
+          }
         }
       }
-    }
-
-    if (opts.silent || !offerDownload) return;
-
-    const go = await showConfirm(
-      "Download local models?",
-      "Settings were saved.\n\n" +
-        "Download and cache the Hugging Face text, image, and video models now?\n\n" +
-        "Yes — start the downloads (Create stays blocked until they finish).\n" +
-        "No — skip download for now (models load on first use)."
-    );
-    if (!go) {
-      showToast("Saved — local models not downloaded yet.");
-      return;
-    }
-
-    await startLocalModelDownload();
     } finally {
       _settingsSaving = false;
+      if (_queuedSaveOpts) {
+        const nextOpts = _queuedSaveOpts;
+        _queuedSaveOpts = null;
+        void saveControlPanelSettings(nextOpts);
+      }
     }
   }
 
@@ -1686,11 +1732,13 @@
     }
   }
 
-  function _showBusyNow(title, message, percent, hint) {
+  function _showBusyNow(title, message, percent, hint, showSpinner) {
     const overlay = $("#busy-overlay");
     if (!overlay) return;
     $("#busy-title").textContent = title || "Please wait…";
     $("#busy-message").textContent = message || "Working…";
+    const spinnerEl = $("#busy-spinner");
+    if (spinnerEl) spinnerEl.hidden = !showSpinner;
     if (hint) setBusyHint(hint);
     overlay.hidden = false;
     busy.visible = true;
@@ -1749,7 +1797,7 @@
     setProgress(message || title || "Working…");
 
     if (delayMs <= 0) {
-      _showBusyNow(busy.title, message, opts.percent, hint);
+      _showBusyNow(busy.title, message, opts.percent, hint, !!opts.spinner);
       return;
     }
 
@@ -1757,6 +1805,8 @@
     if (busy.visible) {
       $("#busy-title").textContent = busy.title;
       $("#busy-message").textContent = message || "Working…";
+      const spinnerEl = $("#busy-spinner");
+      if (spinnerEl) spinnerEl.hidden = !opts.spinner;
       if (hint) setBusyHint(hint);
       if ("percent" in opts) setBusyPercent(opts.percent);
       setBusyCancelVisible(!!busy.cancellable);
@@ -1765,7 +1815,7 @@
 
     busy.startedAt = Date.now();
     busy.showTimer = setTimeout(() => {
-      _showBusyNow(busy.title, message, opts.percent, hint);
+      _showBusyNow(busy.title, message, opts.percent, hint, !!opts.spinner);
     }, delayMs);
   }
 
@@ -1801,6 +1851,8 @@
     busy.jobId = null;
     setBusyCancelVisible(false);
     setBusyHint(BUSY_HINTS.default);
+    const spinnerEl = $("#busy-spinner");
+    if (spinnerEl) spinnerEl.hidden = true;
     const overlay = $("#busy-overlay");
     if (overlay) overlay.hidden = true;
     setProgress(finalMessage || "Ready");
@@ -3380,7 +3432,8 @@
     });
   }
 
-  function showScreen(id) {
+  function showScreen(id, opts) {
+    opts = opts || {};
     if (!id || SCREEN_IDS.indexOf(id) === -1) return;
     const prev = state.focused;
     if (prev === "control" && id !== "control") {
@@ -3409,7 +3462,16 @@
     if (sel && sel.value !== id) sel.value = id;
     syncAppMenus(id);
     hideCaretOutsideWindow(id);
-    if (id === "control") syncControlPanelWidth();
+    if (id === "control") {
+      syncControlPanelWidth();
+      if (
+        !opts.skipModelsFetch &&
+        (state.settingsPage || "models") === "models" &&
+        providerApiKeyReady()
+      ) {
+        void refreshGeminiModelsForControlPanel();
+      }
+    }
     if (id === "form") syncStudioToolsPanel();
     if (id === "prompt-editor") {
       syncPromptEditorUi();
@@ -3459,27 +3521,40 @@
     if (!a || !textSel || !imageSel || !videoSel || !audioSel) return;
 
     const seq = ++_geminiModelsRefreshSeq;
+    const savedCfg = (state.config && state.config.gemini) || {};
     const prev = {
-      text: textSel.value,
-      image: imageSel.value,
-      video: videoSel.value,
-      audio: audioSel.value,
+      text: textSel.value || savedCfg.text_model || "",
+      image: imageSel.value || savedCfg.image_model || "",
+      video: videoSel.value || savedCfg.video_model || "",
+      audio: audioSel.value || savedCfg.audio_model || "",
     };
+
+    const banner = $("#models-loading-banner");
+    const bannerText = $("#models-loading-text");
+    if (bannerText) bannerText.textContent = "Fetching latest model list";
+    if (banner) banner.hidden = false;
+    [textSel, imageSel, videoSel, audioSel].forEach((s) => {
+      s.disabled = true;
+    });
+
     beginBusy(
-      "Refreshing Gemini models",
-      "Checking Google for models available to your API key…",
+      "Models",
+      "Fetching latest model list",
       {
         delayMs: 0,
-        percent: 15,
+        spinner: true,
         hint:
-          "Each modality picker is filled with compatible models only. Requires a saved Gemini API key.",
+          "Each modality picker is filled from Google's live catalog for your API key.",
       }
     );
 
     try {
-      const res = await a.list_gemini_models();
+      const res = await a.list_gemini_models(typedGeminiApiKey());
       if (seq !== _geminiModelsRefreshSeq) return;
       const models = (res && res.models) || [];
+      if (res && res.ok) {
+        state.liveGeminiModels = models.slice();
+      }
       fillGeminiModalitySelect(textSel, prev.text, models, "text");
       fillGeminiModalitySelect(imageSel, prev.image, models, "image");
       fillGeminiModalitySelect(videoSel, prev.video, models, "video");
@@ -3488,17 +3563,12 @@
         updateBusy(
           "Loaded " +
             models.length +
-            " Gemini model" +
+            " live Gemini model" +
             (models.length === 1 ? "" : "s") +
             " from Google.",
           100
         );
       } else {
-        updateBusy(
-          (res && res.error) ||
-            "Could not refresh live models — showing the built-in fallback list.",
-          100
-        );
         if (res && res.error) showToast(res.error);
       }
       updateStudioBackendLabel({
@@ -3517,6 +3587,10 @@
       showToast("Model list refresh failed: " + err);
     } finally {
       if (seq === _geminiModelsRefreshSeq) {
+        [textSel, imageSel, videoSel, audioSel].forEach((s) => {
+          s.disabled = false;
+        });
+        if (banner) banner.hidden = true;
         endBusy("Ready");
         requestAnimationFrame(() => syncDesktopScrollExtent());
       }
@@ -7367,40 +7441,47 @@
     return opt;
   }
 
-  /** Fill a Gemini modality picker with only compatible models. */
-  function fillGeminiModalitySelect(sel, selected, suggestions, modality) {
+  /** Fill a Gemini modality picker strictly from live catalog models (never static defaults). */
+  function fillGeminiModalitySelect(sel, selected, liveModels, modality) {
     if (!sel) return;
     const want = (modality || "text").toLowerCase();
-    const defaults = {
-      text: "gemini-2.5-flash",
-      image: "gemini-2.5-flash-image",
-      video: "veo-2.0-generate-001",
-      audio: "lyria-3-clip-preview",
-    };
     const retired = new Set(
       (state.retiredGeminiModels || []).map((id) => String(id || "").toLowerCase())
     );
-    const filtered = (suggestions || []).filter(
-      (m) => (m.modality || "text").toLowerCase() === want
+    const hasLiveCatalog = Array.isArray(liveModels) && liveModels.length > 0;
+    const filtered = (liveModels || []).filter(
+      (m) =>
+        m &&
+        (m.modality || "text").toLowerCase() === want &&
+        !retired.has(String(m.repo_id || "").toLowerCase())
     );
     sel.innerHTML = "";
+    let pick = String(selected || "").trim();
+    if (pick && retired.has(pick.toLowerCase())) {
+      pick = "";
+    }
+
+    if (!pick) {
+      const placeholder = document.createElement("option");
+      placeholder.value = "";
+      placeholder.textContent = !providerApiKeyReady()
+        ? "Save API key to load live models…"
+        : hasLiveCatalog && !filtered.length
+          ? "No " + want + " models available for this API key"
+          : "Select a " + want + " model…";
+      sel.appendChild(placeholder);
+    }
+
     filtered.forEach((m) => appendModelOption(sel, m, want));
-    let pick = selected || defaults[want] || "";
-    const pickKey = String(pick || "").toLowerCase();
-    if (pick && retired.has(pickKey)) {
-      // Learned/built-in retired ids must not stick in the picker
-      pick = defaults[want] || (sel.options[0] && sel.options[0].value) || "";
-    } else if (pick && ![...sel.options].some((o) => o.value === pick)) {
-      // Keep a valid saved config choice even when the short suggested list
-      // doesn't include it yet (e.g. veo-3.1-fast before live Refresh).
+
+    if (pick && ![...sel.options].some((o) => o.value === pick)) {
       appendModelOption(
         sel,
         { repo_id: pick, label: pick, notes: "saved" },
         want
       );
     }
-    if (!pick && sel.options.length) pick = sel.options[0].value;
-    if (pick) sel.value = pick;
+    sel.value = pick || "";
   }
 
   function creationModality(creation) {
@@ -7664,29 +7745,33 @@
 
     fillMediaFolderControls(boot.config && boot.config.paths);
 
-    const suggested = boot.suggestedGeminiModels || [];
+    const liveModels =
+      (Array.isArray(boot.suggestedGeminiModels) &&
+      boot.suggestedGeminiModels.length
+        ? boot.suggestedGeminiModels
+        : state.liveGeminiModels) || [];
     fillGeminiModalitySelect(
       $("#gemini-text-model"),
-      gemini.text_model || "gemini-2.5-flash",
-      suggested,
+      gemini.text_model || "",
+      liveModels,
       "text"
     );
     fillGeminiModalitySelect(
       $("#gemini-image-model"),
-      gemini.image_model || "gemini-2.5-flash-image",
-      suggested,
+      gemini.image_model || "",
+      liveModels,
       "image"
     );
     fillGeminiModalitySelect(
       $("#gemini-video-model"),
-      gemini.video_model || "veo-2.0-generate-001",
-      suggested,
+      gemini.video_model || "",
+      liveModels,
       "video"
     );
     fillGeminiModalitySelect(
       $("#gemini-audio-model"),
-      gemini.audio_model || "lyria-3-clip-preview",
-      suggested,
+      gemini.audio_model || "",
+      liveModels,
       "audio"
     );
 
@@ -7800,19 +7885,19 @@
       const textM =
         g.text_model ||
         ($("#gemini-text-model") && $("#gemini-text-model").value) ||
-        "gemini-2.5-flash";
+        "—";
       const imageM =
         g.image_model ||
         ($("#gemini-image-model") && $("#gemini-image-model").value) ||
-        "gemini-2.5-flash-image";
+        "—";
       const videoM =
         g.video_model ||
         ($("#gemini-video-model") && $("#gemini-video-model").value) ||
-        "veo-2.0-generate-001";
+        "—";
       const audioM =
         g.audio_model ||
         ($("#gemini-audio-model") && $("#gemini-audio-model").value) ||
-        "lyria-3-clip-preview";
+        "—";
       modelField.textContent =
         "Backend: Gemini · text " +
         textM +
@@ -7914,6 +7999,12 @@
     const statusEl = $("#google-workspace-auth-status");
     const disconnectBtn = $("#btn-google-workspace-disconnect");
     const authorized = !!(status && status.authorized);
+    if (pathInput && !pathInput.value.trim()) {
+      pathInput.placeholder =
+        status && status.has_token
+          ? "Token stored in private app storage"
+          : "Pick OAuth client JSON or authorized token JSON…";
+    }
     if (disconnectBtn) {
       disconnectBtn.hidden = !(authorized || configured || (status && status.has_token));
     }
@@ -8013,42 +8104,88 @@
     clearGeminiApiKeyInputs();
     updateApiKeyIndicators();
     showToast(typed ? "Gemini API key saved to config.yaml." : "Settings saved.");
+    if (state.pendingModelTier || hasMissingModelSettings(state.config)) {
+      const tier =
+        state.pendingModelTier ||
+        (await showRecommendModelsDialog({
+          title: "Choose Model Tier",
+          message:
+            "One or more model slots are not configured yet. Choose Economical, Balanced, or Maximum quality to fetch Google's latest models and set them automatically (you can adjust any slot afterward).",
+        }));
+      state.pendingModelTier = null;
+      if (tier) {
+        await applyTierRecommendation(tier, { onlyMissing: true });
+      } else if (
+        state.focused === "control" &&
+        (state.settingsPage || "models") === "models"
+      ) {
+        await refreshGeminiModelsForControlPanel();
+      }
+    } else if (
+      typed &&
+      state.focused === "control" &&
+      (state.settingsPage || "models") === "models"
+    ) {
+      await refreshGeminiModelsForControlPanel();
+    }
   }
 
   function currentGeminiUiConfig() {
-    const text =
-      ($("#gemini-text-model") && $("#gemini-text-model").value) ||
-      "gemini-2.5-flash";
+    const saved = (state.config && state.config.gemini) || {};
     return {
-      text_model: text,
+      text_model:
+        ($("#gemini-text-model") && $("#gemini-text-model").value.trim()) ||
+        saved.text_model ||
+        "",
       image_model:
-        ($("#gemini-image-model") && $("#gemini-image-model").value) ||
-        "gemini-2.5-flash-image",
+        ($("#gemini-image-model") && $("#gemini-image-model").value.trim()) ||
+        saved.image_model ||
+        "",
       video_model:
-        ($("#gemini-video-model") && $("#gemini-video-model").value) ||
-        "veo-2.0-generate-001",
+        ($("#gemini-video-model") && $("#gemini-video-model").value.trim()) ||
+        saved.video_model ||
+        "",
       audio_model:
-        ($("#gemini-audio-model") && $("#gemini-audio-model").value) ||
-        "lyria-3-clip-preview",
+        ($("#gemini-audio-model") && $("#gemini-audio-model").value.trim()) ||
+        saved.audio_model ||
+        "",
     };
   }
 
   function collectSettings() {
+    const savedGemini = (state.config && state.config.gemini) || {};
+    const savedWorkspace =
+      (state.config && state.config.google_workspace) || {};
+    const rawCredPath =
+      ($("#google-workspace-credentials-path") &&
+        $("#google-workspace-credentials-path").value.trim()) ||
+      "";
+    const cleanCredPath =
+      rawCredPath &&
+      rawCredPath !== "Stored in app vault" &&
+      !/google_workspace_token\.json$/i.test(rawCredPath) &&
+      !/gmail_token\.json$/i.test(rawCredPath)
+        ? rawCredPath
+        : savedWorkspace.credentials_path || null;
     return {
       backend: { provider: "gemini" },
       gemini: {
         text_model:
           ($("#gemini-text-model") && $("#gemini-text-model").value.trim()) ||
-          "gemini-2.5-flash",
+          savedGemini.text_model ||
+          "",
         image_model:
           ($("#gemini-image-model") && $("#gemini-image-model").value.trim()) ||
-          "gemini-2.5-flash-image",
+          savedGemini.image_model ||
+          "",
         video_model:
           ($("#gemini-video-model") && $("#gemini-video-model").value.trim()) ||
-          "veo-2.0-generate-001",
+          savedGemini.video_model ||
+          "",
         audio_model:
           ($("#gemini-audio-model") && $("#gemini-audio-model").value.trim()) ||
-          "lyria-3-clip-preview",
+          savedGemini.audio_model ||
+          "",
         api_key: typedGeminiApiKey(),
         google_search: $("#gemini-search") ? $("#gemini-search").checked : true,
         two_pass_verify: $("#gemini-two-pass") ? $("#gemini-two-pass").checked : true,
@@ -8065,10 +8202,7 @@
         extra_instructions: ($("#system-extra") && $("#system-extra").value) || "",
       },
       google_workspace: {
-        credentials_path:
-          ($("#google-workspace-credentials-path") &&
-            $("#google-workspace-credentials-path").value.trim()) ||
-          null,
+        credentials_path: cleanCredPath,
         token_path: ".synthetic-text-extruder/google_workspace_token.json",
       },
       paths: {
@@ -8142,7 +8276,8 @@
     let next = allowed[page] ? page : "models";
     if (next === "ai") next = "models";
     if (next === "display") next = "appearance";
-    if (!opts.skipSave && state.settingsPage && state.settingsPage !== next) {
+    const prevPage = state.settingsPage;
+    if (!opts.skipSave && prevPage && prevPage !== next) {
       void persistSettingsNow({ applyDisplay: true });
     }
     state.settingsPage = next;
@@ -8155,6 +8290,15 @@
       const id = pane.getAttribute("data-control-pane");
       pane.hidden = id !== next;
     });
+    if (
+      !opts.skipModelsFetch &&
+      next === "models" &&
+      prevPage !== "models" &&
+      state.focused === "control" &&
+      providerApiKeyReady()
+    ) {
+      void refreshGeminiModelsForControlPanel();
+    }
   }
 
   function setControlTab(tab) {
@@ -11581,6 +11725,7 @@
               gemini: currentGeminiUiConfig(),
             },
           });
+          void persistSettingsNow({ applyDisplay: false });
         });
       }
     );
@@ -11590,14 +11735,30 @@
         syncGeminiTwoPassAvailability();
         syncGeminiSearchEnrichmentAvailability();
         syncStudioToolsPanel();
+        persistSettingsSoon({ applyDisplay: false });
       });
     }
 
     if ($("#gemini-use-tools")) {
       $("#gemini-use-tools").addEventListener("change", () => {
         syncGeminiToolsAvailability();
+        persistSettingsSoon({ applyDisplay: false });
       });
     }
+
+    [
+      "gemini-two-pass",
+      "gemini-ocr-search-images",
+      "gemini-youtube-search-captions",
+      "gemini-temp",
+      "system-extra",
+    ].forEach((id) => {
+      const el = $("#" + id);
+      if (!el) return;
+      el.addEventListener("change", () => {
+        persistSettingsSoon({ applyDisplay: false });
+      });
+    });
 
     if ($("#studio-enable-tools")) {
       $("#studio-enable-tools").addEventListener("change", () => {
@@ -11723,9 +11884,6 @@
           return;
         }
         if (res.kind === "token") {
-          if ($("#google-workspace-credentials-path")) {
-            $("#google-workspace-credentials-path").value = res.token_path || res.path || "Stored in app vault";
-          }
           showToast(res.message || "Google Workspace token imported.");
           await refreshGoogleWorkspaceAuthStatus();
           return;
@@ -11807,8 +11965,7 @@
     }
 
     if ($("#btn-gemini-recommend-models")) {
-      $("#btn-gemini-recommend-models").addEventListener("click", async () => {
-        await persistSettingsNow({ applyDisplay: false });
+      $("#btn-gemini-recommend-models").addEventListener("click", () => {
         void runRecommendModels("gemini");
       });
     }
@@ -11825,6 +11982,7 @@
         $("#opt-sound-volume").disabled = !state.soundEnabled;
       }
       if (state.soundEnabled) playUiSound("notify");
+      persistSettingsSoon({ applyDisplay: true });
     });
     let _soundVolPreviewTimer = null;
     if ($("#opt-sound-volume")) {
@@ -11841,23 +11999,37 @@
         // Final settle after drag; input debounce may already have previewed.
         clearTimeout(_soundVolPreviewTimer);
         applySoundVolume($("#opt-sound-volume").value, { preview: true });
+        persistSettingsSoon({ applyDisplay: true });
       });
     }
     if ($("#app-theme")) {
       $("#app-theme").addEventListener("change", () => {
         applyAppTheme($("#app-theme").value);
+        persistSettingsSoon({ applyDisplay: true });
       });
     }
     if ($("#ui-font")) {
       $("#ui-font").addEventListener("change", () => {
         applyUiFont($("#ui-font").value);
+        persistSettingsSoon({ applyDisplay: true });
       });
     }
     if ($("#ui-font-size")) {
       $("#ui-font-size").addEventListener("change", () => {
         applyUiFontSize($("#ui-font-size").value);
+        persistSettingsSoon({ applyDisplay: true });
       });
     }
+
+    const flushSettingsOnHide = () => {
+      if (_settingsSaveTimer || state.focused === "control") {
+        void persistSettingsNow({ applyDisplay: true });
+      }
+    };
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") flushSettingsOnHide();
+    });
+    window.addEventListener("pagehide", flushSettingsOnHide);
 
     wireImageEditEvents();
     wireVideoEditEvents();
@@ -11916,9 +12088,36 @@
       fillCatalogs(boot);
       fillControlPanel(boot);
       renderArchives();
-      // Do not auto-open Viewer/Archives on launch — user opens them explicitly
       renderTaskbar();
       syncStudioToolsPanel();
+
+      if (hasMissingModelSettings(state.config)) {
+        const hasKey = !!(
+          state.config &&
+          state.config.gemini &&
+          state.config.gemini.api_key_set
+        );
+        const tier = await showRecommendModelsDialog({
+          title: "Choose Default Model Tier",
+          message: hasKey
+            ? "One or more model slots are missing a setting. Choose Economical, Balanced, or Maximum quality to fetch Google's latest models and configure them automatically (you can adjust them afterward)."
+            : "Models are not configured yet. Choose Economical, Balanced, or Maximum quality, then paste and save your Gemini API key so the app can fetch Google's latest models (you can adjust them afterward).",
+        });
+        if (tier) {
+          if (hasKey) {
+            await applyTierRecommendation(tier, { onlyMissing: true });
+            setSettingsPage("models", { skipSave: true, skipModelsFetch: true });
+            showScreen("control", { skipModelsFetch: true });
+          } else {
+            state.pendingModelTier = tier;
+            setSettingsPage("models", { skipSave: true, skipModelsFetch: true });
+            showScreen("control", { skipModelsFetch: true });
+            const first = geminiApiKeyInputs()[0];
+            if (first) first.focus();
+            showToast("Paste and save your Gemini API key to load and apply your chosen model tier.");
+          }
+        }
+      }
     } catch (err) {
       console.error(err);
       showToast("Bootstrap failed: " + err);

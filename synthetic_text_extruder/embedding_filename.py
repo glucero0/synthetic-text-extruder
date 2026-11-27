@@ -591,11 +591,13 @@ def propose_titles_from_content(
     from google import genai
     from google.genai import types
 
-    from .gemini_provider import DEFAULT_GEMINI_TEXT_MODEL, normalize_gemini_model
+    from .gemini_provider import ensure_gemini_model_for_modality, normalize_gemini_model
 
-    gemini_cfg = (config or {}).get("gemini") or {}
-    model_name = normalize_gemini_model(
-        gemini_cfg.get("text_model") or DEFAULT_GEMINI_TEXT_MODEL
+    gemini_cfg = dict((config or {}).get("gemini") or {})
+    if not gemini_cfg.get("api_key"):
+        gemini_cfg["api_key"] = key
+    model_name = normalize_gemini_model(gemini_cfg.get("text_model")) or ensure_gemini_model_for_modality(
+        gemini_cfg, "text"
     )
     client = genai.Client(api_key=key)
     prompt = _title_prompt(modality)

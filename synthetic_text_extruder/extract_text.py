@@ -340,7 +340,11 @@ def _gemini_multimodal(
         raise RuntimeError(
             "Gemini API key missing. Paste your key in Settings → AI Model (Gemini)."
         )
-    model_name = normalize_gemini_model(model_id or gemini_cfg.get("text_model"))
+    from .gemini_provider import ensure_gemini_model_for_modality
+
+    model_name = normalize_gemini_model(
+        model_id or gemini_cfg.get("text_model")
+    ) or ensure_gemini_model_for_modality(gemini_cfg, "text")
 
     try:
         from google import genai
@@ -411,7 +415,11 @@ def gemini_text_prompt(
         raise RuntimeError(
             "Gemini API key missing. Paste your key in Settings → AI Model (Gemini)."
         )
-    model_name = normalize_gemini_model(model_id or gemini_cfg.get("text_model"))
+    from .gemini_provider import ensure_gemini_model_for_modality
+
+    model_name = normalize_gemini_model(
+        model_id or gemini_cfg.get("text_model")
+    ) or ensure_gemini_model_for_modality(gemini_cfg, "text")
     try:
         from google import genai
         from google.genai import types
