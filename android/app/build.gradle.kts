@@ -114,6 +114,7 @@ tasks.configureEach {
 }
 
 dependencies {
+    val media3Version = "1.8.0"
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.webkit:webkit:1.12.1")
@@ -121,4 +122,11 @@ dependencies {
     implementation("androidx.browser:browser:1.8.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    implementation("androidx.media3:media3-common:$media3Version")
+    implementation("androidx.media3:media3-exoplayer:$media3Version")
+    implementation("androidx.media3:media3-transformer:$media3Version")
+    implementation("androidx.media3:media3-effect:$media3Version")
+    implementation("androidx.media3:media3-muxer:$media3Version")
+    implementation("androidx.media3:media3-extractor:$media3Version")
+    implementation("org.jellyfin.media3:media3-ffmpeg-decoder:1.8.0+1")
 }

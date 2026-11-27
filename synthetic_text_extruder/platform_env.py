@@ -45,8 +45,8 @@ def platform_capabilities() -> dict[str, Any]:
     return {
         "platform": "android" if android else "desktop",
         "isAndroid": android,
-        "videoEditor": not android,
-        "ffmpeg": not android,
+        "videoEditor": True,
+        "ffmpeg": True,
         "powershell": not android,
         "nativeFileDialogs": not android,
         "oauthTokenImport": True,

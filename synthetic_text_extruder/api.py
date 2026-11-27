@@ -2130,6 +2130,35 @@ class Api:
             except OSError:
                 pass
 
+    def prepare_edited_video_export(
+        self, creation_id: str, ops: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Render video edits and return filename + base64 MP4 for Android Share / Save."""
+        import base64
+
+        err, dest, target = self._render_edited_video(creation_id, ops)
+        if err is not None:
+            return err
+        assert dest is not None and target is not None
+        try:
+            raw = dest.read_bytes()
+            safe = self._media_save_basename(target, fallback="video")
+            return {
+                "ok": True,
+                "filename": f"{safe}.mp4",
+                "mimeType": "video/mp4",
+                "base64": base64.b64encode(raw).decode("ascii"),
+                "size": len(raw),
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("prepare_edited_video_export failed")
+            return {"ok": False, "error": str(exc)}
+        finally:
+            try:
+                dest.unlink(missing_ok=True)
+            except OSError:
+                pass
+
     def split_video(self, creation_id: str, time_s: float) -> dict[str, Any]:
         """Split a video at time_s into two new library creations (A before, B after)."""
         import uuid
@@ -2669,22 +2698,19 @@ class Api:
             return picked
         return self._import_source_paths(picked["paths"], already=already)
 
-    def import_studio_sources_folder(
-        self, already: int = 0, recursive: bool = False
+    def import_staged_folder(
+        self,
+        folder_path: str | Path,
+        *,
+        folder_name: str = "",
+        already: int = 0,
+        recursive: bool = False,
     ) -> dict[str, Any]:
-        """Import files from a chosen folder as Studio sources."""
+        """Import supported Studio source files from an existing local folder."""
         from .studio_sources import list_source_files_in_folder
 
-        if self._window is None:
-            return {"ok": False, "error": "No window"}
-        result = self._window.create_file_dialog(_file_dialog("folder"))
-        if not result:
-            return {"ok": False, "cancelled": True}
-        folder = Path(result if isinstance(result, str) else result[0])
-        if folder.is_file():
-            folder = folder.parent
         try:
-            folder = folder.expanduser().resolve()
+            folder = Path(folder_path).expanduser().resolve()
         except OSError as exc:
             return {"ok": False, "error": str(exc)}
         if not folder.is_dir():
@@ -2695,7 +2721,26 @@ class Api:
         return self._import_source_paths(
             files,
             already=already,
+            folder_name=(folder_name or "").strip() or folder.name,
+            recursive=bool(recursive),
+        )
+
+    def import_studio_sources_folder(
+        self, already: int = 0, recursive: bool = False
+    ) -> dict[str, Any]:
+        """Import files from a chosen folder as Studio sources."""
+        if self._window is None:
+            return {"ok": False, "error": "No window"}
+        result = self._window.create_file_dialog(_file_dialog("folder"))
+        if not result:
+            return {"ok": False, "cancelled": True}
+        folder = Path(result if isinstance(result, str) else result[0])
+        if folder.is_file():
+            folder = folder.parent
+        return self.import_staged_folder(
+            folder,
             folder_name=folder.name,
+            already=already,
             recursive=bool(recursive),
         )
 
@@ -2734,6 +2779,7 @@ class Api:
         modality: str = "image",
         save_to_archives: bool = False,
         folder_name: str = "",
+        recursive: bool = False,
     ) -> dict[str, Any]:
         """
         Import files uploaded via browser/Android file picker (base64 payloads).
@@ -2762,7 +2808,9 @@ class Api:
                     return {"ok": False, "error": f"Invalid upload data for {safe_name}: {exc}"}
                 dest = tmp_dir / safe_name
                 if dest.exists():
-                    dest = tmp_dir / f"{idx}_{safe_name}"
+                    dup_dir = tmp_dir / f"dup_{idx}"
+                    dup_dir.mkdir(parents=True, exist_ok=True)
+                    dest = dup_dir / safe_name
                 dest.write_bytes(raw_bytes)
                 written.append(dest)
 
@@ -2772,6 +2820,7 @@ class Api:
                     written,
                     already=already,
                     folder_name=folder_name,
+                    recursive=bool(recursive),
                 )
             if kind == "viewer":
                 from .media_store import modality_for_path

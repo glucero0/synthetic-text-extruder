@@ -4,11 +4,13 @@ import android.annotation.SuppressLint
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.util.Base64
 import android.view.Gravity
 import android.view.ViewGroup
 import android.webkit.JavascriptInterface
+import android.webkit.MimeTypeMap
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
@@ -43,8 +45,70 @@ class MainActivity : AppCompatActivity() {
     private lateinit var webView: WebView
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
     private var pendingCameraUri: Uri? = null
+    private var pendingFolderPick: PendingFolderPick? = null
     private var serverOrigin: String? = null
     private var lastPostureJson: String? = null
+
+    private data class PendingFolderPick(
+        val requestId: String,
+        val already: Int,
+        val recursive: Boolean
+    )
+
+    private data class TreeChildEntry(
+        val docId: String,
+        val displayName: String,
+        val mimeType: String,
+        val flags: Int
+    )
+
+    private val openFolderTreeLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val req = pendingFolderPick
+        pendingFolderPick = null
+        if (req == null) return@registerForActivityResult
+
+        val treeUri = if (result.resultCode == RESULT_OK) result.data?.data else null
+        if (treeUri == null) {
+            resolveNativeRequest(
+                req.requestId,
+                JSONObject().put("ok", false).put("cancelled", true).toString()
+            )
+            return@registerForActivityResult
+        }
+
+        lifecycleScope.launch(Dispatchers.IO) {
+            val stagedDir = File(cacheDir, "picked_folder_${System.nanoTime()}").apply { mkdirs() }
+            try {
+                val folderName = resolveTreeFolderName(treeUri)
+                stageDocumentTree(treeUri, stagedDir, req.recursive)
+                val py = Python.getInstance()
+                val serverMod = py.getModule("synthetic_text_extruder.android_server")
+                val jsonResult = serverMod.callAttr(
+                    "import_picked_folder_json",
+                    stagedDir.absolutePath,
+                    folderName,
+                    req.already,
+                    req.recursive
+                ).toString()
+                resolveNativeRequest(req.requestId, jsonResult)
+            } catch (exc: Throwable) {
+                resolveNativeRequest(
+                    req.requestId,
+                    JSONObject()
+                        .put("ok", false)
+                        .put("error", exc.message ?: "Folder import failed")
+                        .toString()
+                )
+            } finally {
+                try {
+                    stagedDir.deleteRecursively()
+                } catch (_: Throwable) {
+                }
+            }
+        }
+    }
 
     private val openDocumentsLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -76,6 +140,7 @@ class MainActivity : AppCompatActivity() {
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        AndroidMediaBridge.init(applicationContext)
 
         val root = FrameLayout(this)
         val loadingBox = FrameLayout(this)
@@ -330,6 +395,167 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun resolveNativeRequest(requestId: String, resultJson: String) {
+        if (!::webView.isInitialized) return
+        val safeId = JSONObject.quote(requestId)
+        val safeJson = JSONObject.quote(resultJson)
+        webView.post {
+            webView.evaluateJavascript(
+                "if (window.__STE_RESOLVE_NATIVE_REQUEST__) window.__STE_RESOLVE_NATIVE_REQUEST__($safeId, $safeJson);",
+                null
+            )
+        }
+    }
+
+    private fun resolveTreeFolderName(treeUri: Uri): String {
+        val treeDocId = try {
+            DocumentsContract.getTreeDocumentId(treeUri)
+        } catch (_: Throwable) {
+            ""
+        }
+        if (treeDocId.isNotEmpty()) {
+            val docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, treeDocId)
+            try {
+                contentResolver.query(
+                    docUri,
+                    arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME),
+                    null,
+                    null,
+                    null
+                )?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val name = cursor.getString(0)?.trim().orEmpty()
+                        if (name.isNotEmpty()) return name
+                    }
+                }
+            } catch (_: Throwable) {
+            }
+            val fallback = treeDocId
+                .substringAfterLast(':')
+                .trim('/')
+                .substringAfterLast('/')
+                .trim()
+            if (fallback.isNotEmpty()) return fallback
+        }
+        return "Folder"
+    }
+
+    private fun stageDocumentTree(treeUri: Uri, rootDest: File, recursive: Boolean) {
+        val rootDocId = DocumentsContract.getTreeDocumentId(treeUri)
+        val visitedDirs = mutableSetOf<String>()
+        var stagedCount = 0
+        val maxStagedFiles = 105
+        val rejectedSuffixes = setOf(
+            ".exe", ".dll", ".so", ".dylib", ".bin", ".msi", ".sys", ".com",
+            ".pif", ".scr", ".cpl", ".iso", ".img", ".dmg",
+            ".tar", ".gz", ".zip", ".rar", ".7z", ".cab", ".xz", ".bz2",
+            ".apk", ".aab", ".dex"
+        )
+
+        fun sanitizeSegment(raw: String, fallback: String): String {
+            val cleaned = raw.replace('/', '_').replace('\\', '_').trim()
+            if (cleaned.isEmpty() || cleaned == "." || cleaned == "..") return fallback
+            return cleaned
+        }
+
+        fun uniqueDestFile(dir: File, name: String): File {
+            val initial = File(dir, name)
+            if (!initial.exists()) return initial
+            val dot = name.lastIndexOf('.')
+            val stem = if (dot > 0) name.substring(0, dot) else name
+            val suffix = if (dot > 0) name.substring(dot) else ""
+            for (n in 1..1000) {
+                val cand = File(dir, "${stem}_$n$suffix")
+                if (!cand.exists()) return cand
+            }
+            return File(dir, "${System.nanoTime()}_$name")
+        }
+
+        fun walk(dirDocId: String, destDir: File, depth: Int) {
+            if (stagedCount >= maxStagedFiles || depth > 16) return
+            if (!visitedDirs.add(dirDocId)) return
+            destDir.mkdirs()
+
+            val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, dirDocId)
+            val entries = mutableListOf<TreeChildEntry>()
+            try {
+                contentResolver.query(
+                    childrenUri,
+                    arrayOf(
+                        DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                        DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                        DocumentsContract.Document.COLUMN_MIME_TYPE,
+                        DocumentsContract.Document.COLUMN_FLAGS
+                    ),
+                    null,
+                    null,
+                    null
+                )?.use { cursor ->
+                    while (cursor.moveToNext()) {
+                        val cid = cursor.getString(0) ?: continue
+                        val cname = cursor.getString(1)?.trim().orEmpty()
+                        val cmime = cursor.getString(2)?.trim().orEmpty()
+                        val cflags = if (!cursor.isNull(3)) cursor.getInt(3) else 0
+                        entries.add(TreeChildEntry(cid, cname, cmime, cflags))
+                    }
+                }
+            } catch (_: Throwable) {
+                return
+            }
+
+            entries.sortBy { it.displayName.lowercase() }
+
+            for (entry in entries) {
+                if (stagedCount >= maxStagedFiles) break
+                val rawName = entry.displayName
+                if (rawName.isEmpty() || rawName.startsWith(".")) continue
+
+                if (entry.mimeType == DocumentsContract.Document.MIME_TYPE_DIR) {
+                    if (recursive) {
+                        val subDir = File(destDir, sanitizeSegment(rawName, "subfolder"))
+                        walk(entry.docId, subDir, depth + 1)
+                    }
+                    continue
+                }
+
+                if ((entry.flags and DocumentsContract.Document.FLAG_VIRTUAL_DOCUMENT) != 0) {
+                    continue
+                }
+
+                var safeName = sanitizeSegment(rawName, "file")
+                if (!safeName.contains('.') && entry.mimeType.isNotEmpty()) {
+                    val ext = MimeTypeMap.getSingleton().getExtensionFromMimeType(entry.mimeType)
+                    if (!ext.isNullOrBlank()) {
+                        safeName = "$safeName.$ext"
+                    }
+                }
+                val dotIdx = safeName.lastIndexOf('.')
+                val lowerExt = if (dotIdx >= 0) safeName.substring(dotIdx).lowercase() else ""
+                if (lowerExt in rejectedSuffixes) continue
+
+                val childUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, entry.docId)
+                val destFile = uniqueDestFile(destDir, safeName)
+                try {
+                    val copied = contentResolver.openInputStream(childUri)?.use { input ->
+                        destFile.outputStream().use { output ->
+                            input.copyTo(output)
+                        }
+                        true
+                    } ?: false
+                    if (copied) {
+                        stagedCount += 1
+                    } else {
+                        destFile.delete()
+                    }
+                } catch (_: Throwable) {
+                    destFile.delete()
+                }
+            }
+        }
+
+        walk(rootDocId, rootDest, 0)
+    }
+
     private fun shareFileToSheet(file: File, mimeType: String) {
         val uri = FileProvider.getUriForFile(this, "${packageName}.fileprovider", file)
         val share = Intent(Intent.ACTION_SEND).apply {
@@ -374,6 +600,39 @@ class MainActivity : AppCompatActivity() {
             } catch (_: Throwable) {
                 false
             }
+        }
+
+        @JavascriptInterface
+        fun pickStudioFolder(requestId: String, already: Int, recursive: Boolean): Boolean {
+            if (requestId.isBlank()) return false
+            runOnUiThread {
+                pendingFolderPick?.let { prev ->
+                    resolveNativeRequest(
+                        prev.requestId,
+                        JSONObject().put("ok", false).put("cancelled", true).toString()
+                    )
+                }
+                pendingFolderPick = PendingFolderPick(requestId, already, recursive)
+                try {
+                    val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+                        addFlags(
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                                Intent.FLAG_GRANT_PREFIX_URI_PERMISSION
+                        )
+                    }
+                    openFolderTreeLauncher.launch(intent)
+                } catch (exc: Throwable) {
+                    pendingFolderPick = null
+                    resolveNativeRequest(
+                        requestId,
+                        JSONObject()
+                            .put("ok", false)
+                            .put("error", exc.message ?: "Folder picker unavailable")
+                            .toString()
+                    )
+                }
+            }
+            return true
         }
 
         @JavascriptInterface

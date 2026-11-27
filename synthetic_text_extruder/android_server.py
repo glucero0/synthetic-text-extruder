@@ -20,7 +20,7 @@ os.environ.setdefault("CRYPTOGRAPHY_OPENSSL_NO_LEGACY", "1")
 
 logger = logging.getLogger(__name__)
 
-_RPC_BLOCKLIST = frozenset({"set_window", "set_ui_origin"})
+_RPC_BLOCKLIST = frozenset({"set_window", "set_ui_origin", "import_staged_folder"})
 _server_lock = threading.Lock()
 _active_server: ThreadingHTTPServer | None = None
 _active_api: Any = None
@@ -221,6 +221,44 @@ def stop_android_server() -> None:
         _active_api = None
         _active_origin = None
         _active_token = None
+
+
+def import_picked_folder(
+    folder_path: str,
+    folder_name: str = "",
+    already: int = 0,
+    recursive: bool = False,
+) -> dict[str, Any]:
+    """Import a staged folder picked via Android SAF ACTION_OPEN_DOCUMENT_TREE."""
+    api = _active_api
+    if api is None:
+        return {"ok": False, "error": "Android engine is not ready"}
+    return api.import_staged_folder(
+        folder_path,
+        folder_name=folder_name,
+        already=int(already or 0),
+        recursive=bool(recursive),
+    )
+
+
+def import_picked_folder_json(
+    folder_path: str,
+    folder_name: str = "",
+    already: int = 0,
+    recursive: bool = False,
+) -> str:
+    """JSON-serialized wrapper around ``import_picked_folder`` for Kotlin/WebView."""
+    try:
+        res = import_picked_folder(
+            folder_path,
+            folder_name=folder_name,
+            already=already,
+            recursive=recursive,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Android folder import failed")
+        res = {"ok": False, "error": str(exc)}
+    return json.dumps(res, ensure_ascii=True)
 
 
 def active_jobs_summary() -> dict[str, Any]:

@@ -28,7 +28,7 @@
     if (keepAlive && host && typeof host.startForegroundJob === "function") {
       try {
         host.startForegroundJob("Connecting Google Workspace…");
-      } catch (_e) {}
+      } catch (_e) { }
     }
     try {
       const resp = await fetch("/api/rpc/" + encodeURIComponent(method), {
@@ -50,7 +50,7 @@
       if (keepAlive && host && typeof host.stopForegroundJob === "function") {
         try {
           host.stopForegroundJob();
-        } catch (_e) {}
+        } catch (_e) { }
       }
     }
   }
@@ -110,6 +110,126 @@
       document.body.appendChild(input);
       input.click();
     });
+  }
+
+  const pendingNativeRequests = new Map();
+  let nativeReqSeq = 0;
+
+  window.__STE_RESOLVE_NATIVE_REQUEST__ = function (requestId, payloadJson) {
+    const entry = pendingNativeRequests.get(String(requestId || ""));
+    if (!entry) return;
+    pendingNativeRequests.delete(String(requestId || ""));
+    try {
+      const parsed =
+        typeof payloadJson === "string"
+          ? JSON.parse(payloadJson)
+          : payloadJson || { ok: false, error: "Empty native response" };
+      entry.resolve(parsed);
+    } catch (err) {
+      entry.resolve({
+        ok: false,
+        error: String(err && err.message ? err.message : err),
+      });
+    }
+  };
+
+  function pickFolderNative(already, recursive) {
+    const host = window.AndroidHost;
+    const reqId = "folder_" + Date.now() + "_" + ++nativeReqSeq;
+    return new Promise((resolve) => {
+      pendingNativeRequests.set(reqId, { resolve });
+      try {
+        const started = host.pickStudioFolder(
+          reqId,
+          Number(already || 0),
+          Boolean(recursive)
+        );
+        if (!started) {
+          pendingNativeRequests.delete(reqId);
+          resolve({ ok: false, error: "Folder picker could not be started." });
+        }
+      } catch (err) {
+        pendingNativeRequests.delete(reqId);
+        resolve({
+          ok: false,
+          error: String(err && err.message ? err.message : err),
+        });
+      }
+    });
+  }
+
+  function pickFolderViaInput() {
+    return new Promise((resolve) => {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.multiple = true;
+      input.webkitdirectory = true;
+      input.setAttribute("webkitdirectory", "");
+      input.setAttribute("directory", "");
+      input.style.position = "fixed";
+      input.style.left = "-9999px";
+      let settled = false;
+      const finish = (files) => {
+        if (settled) return;
+        settled = true;
+        input.remove();
+        resolve(files ? Array.from(files) : []);
+      };
+      input.addEventListener("change", () => finish(input.files));
+      input.addEventListener("cancel", () => finish([]));
+      window.addEventListener(
+        "focus",
+        () => {
+          setTimeout(() => {
+            if (!settled && (!input.files || input.files.length === 0)) {
+              finish([]);
+            }
+          }, 600);
+        },
+        { once: true }
+      );
+      document.body.appendChild(input);
+      input.click();
+    });
+  }
+
+  async function uploadPickedFolderViaInput(already, recursive) {
+    const rawFiles = await pickFolderViaInput();
+    if (!rawFiles.length) return { ok: false, cancelled: true };
+    let folderName = "";
+    const filtered = [];
+    for (const f of rawFiles) {
+      const rel = String(f.webkitRelativePath || f.name || "").replace(/\\/g, "/");
+      const parts = rel.split("/").filter(Boolean);
+      if (!parts.length) continue;
+      if (!folderName && parts.length >= 2) {
+        folderName = parts[0];
+      }
+      const subParts = parts.length >= 2 ? parts.slice(1) : parts;
+      if (subParts.some((seg) => seg.startsWith("."))) continue;
+      if (!recursive && parts.length > 2) continue;
+      filtered.push(f);
+    }
+    if (!filtered.length) {
+      return { ok: false, error: "No supported files in that folder." };
+    }
+    const payloads = [];
+    for (const f of filtered) {
+      payloads.push({
+        name: f.name || "file",
+        mimeType: f.type || "",
+        data_b64: await fileToBase64(f),
+      });
+    }
+    return rpcCall("import_uploaded_files", [
+      payloads,
+      "sources",
+      already || 0,
+      "image",
+      false,
+      folderName || "Folder",
+      Boolean(recursive),
+    ]);
   }
 
   async function uploadPickedFiles(opts, mode, extraArgs = []) {
@@ -179,8 +299,12 @@
     async import_studio_sources(already) {
       return uploadPickedFiles({ accept: "*/*", multiple: true }, "sources", [already || 0]);
     },
-    async import_studio_sources_folder(already) {
-      return uploadPickedFiles({ accept: "*/*", multiple: true }, "sources", [already || 0]);
+    async import_studio_sources_folder(already, recursive) {
+      const host = window.AndroidHost;
+      if (host && typeof host.pickStudioFolder === "function") {
+        return pickFolderNative(already || 0, Boolean(recursive));
+      }
+      return uploadPickedFolderViaInput(already || 0, Boolean(recursive));
     },
     async import_media_file(modality) {
       const mod = String(modality || "image").toLowerCase();
@@ -236,6 +360,19 @@
       const res = await rpcCall("prepare_export_payload", [creation || {}]);
       if (!res || !res.ok) return res || { ok: false, error: "Export failed" };
       return shareOrSaveNative(res.filename, res.mimeType, res.base64, true);
+    },
+    async export_edited_video(creationId, ops) {
+      const res = await rpcCall("prepare_edited_video_export", [
+        creationId,
+        ops || {},
+      ]);
+      if (!res || !res.ok) return res || { ok: false, error: "Export failed" };
+      return shareOrSaveNative(
+        res.filename || "edited_video.mp4",
+        res.mimeType || "video/mp4",
+        res.base64,
+        true
+      );
     },
     async pick_media_folder() {
       return { ok: false, error: "Android manages app library storage automatically." };
@@ -326,6 +463,7 @@
       '<div class="mobile-sheet-card" role="menu" aria-label="More screens">' +
       '  <div class="mobile-sheet-title">More</div>' +
       '  <button type="button" data-nav-target="image-edit" role="menuitem">Image Editor</button>' +
+      '  <button type="button" data-nav-target="video-edit" role="menuitem">Video Editor</button>' +
       '  <button type="button" data-nav-target="prompt-editor" role="menuitem">Prompt Editor</button>' +
       '  <button type="button" data-nav-target="control" role="menuitem">Settings</button>' +
       '  <button type="button" data-nav-close="1" class="mobile-sheet-cancel">Close</button>' +

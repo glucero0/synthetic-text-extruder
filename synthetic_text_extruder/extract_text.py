@@ -258,7 +258,7 @@ def _extract_video(
     from .cancellation import raise_if_cancelled
     from .video_edit import (
         FfmpegNotFoundError,
-        extract_audio_mp3,
+        extract_audio_track,
         video_has_audio_stream,
     )
 
@@ -272,8 +272,9 @@ def _extract_video(
 
     if has_audio:
         _emit(progress, "Extracting audio…", percent=30, title="Transcribing")
+        audio_mime = "audio/mpeg"
         try:
-            audio = extract_audio_mp3(path, max_seconds=600)
+            audio, audio_mime = extract_audio_track(path, max_seconds=600)
         except FfmpegNotFoundError:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -284,7 +285,7 @@ def _extract_video(
             _emit(progress, "Transcribing audio…", percent=45, title="Transcribing")
             text, model = _gemini_multimodal(
                 audio,
-                mime_type="audio/mpeg",
+                mime_type=audio_mime,
                 prompt=TRANSCRIPT_PROMPT,
                 config=config,
                 model_id=model_id,
