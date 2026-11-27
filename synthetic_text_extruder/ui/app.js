@@ -7906,10 +7906,17 @@
 
   function updateGoogleWorkspaceAuthIndicators(status) {
     const pathInput = $("#google-workspace-credentials-path");
-    const configured = !!(pathInput && pathInput.value.trim());
+    const configured = !!(
+      (pathInput && pathInput.value.trim()) ||
+      (status && status.configured)
+    );
     const badge = $("#google-workspace-auth-badge");
     const statusEl = $("#google-workspace-auth-status");
+    const disconnectBtn = $("#btn-google-workspace-disconnect");
     const authorized = !!(status && status.authorized);
+    if (disconnectBtn) {
+      disconnectBtn.hidden = !(authorized || configured || (status && status.has_token));
+    }
 
     if (badge) {
       if (authorized) {
@@ -11241,6 +11248,19 @@
         studioLoadSourceFolder()
       );
     }
+    window.addEventListener("ste:sources-imported", async (ev) => {
+      const res = ev && ev.detail;
+      if (!res || !res.ok || !Array.isArray(res.creations) || !res.creations.length) return;
+      try {
+        const added = await addImportedCreationsAsSources(res.creations);
+        openWindow("form");
+        if (added) {
+          showToast(added + " file" + (added === 1 ? "" : "s") + " added to Studio sources.");
+        }
+      } catch (err) {
+        showToast("Could not add source: " + err);
+      }
+    });
     if ($("#studio-saved-prompt")) {
       $("#studio-saved-prompt").addEventListener("change", () =>
         onStudioSavedPromptChange()
@@ -11702,11 +11722,45 @@
           showToast(res.error || "Could not pick OAuth client JSON");
           return;
         }
+        if (res.kind === "token") {
+          if ($("#google-workspace-credentials-path")) {
+            $("#google-workspace-credentials-path").value = res.token_path || res.path || "Stored in app vault";
+          }
+          showToast(res.message || "Google Workspace token imported.");
+          await refreshGoogleWorkspaceAuthStatus();
+          return;
+        }
         if ($("#google-workspace-credentials-path")) {
           $("#google-workspace-credentials-path").value = res.path || "";
         }
-        updateGoogleWorkspaceAuthIndicators();
+        if (res.message) showToast(res.message);
+        updateGoogleWorkspaceAuthIndicators(res);
         void persistSettingsNow({ applyDisplay: false });
+      });
+    }
+
+    if ($("#btn-google-workspace-disconnect")) {
+      $("#btn-google-workspace-disconnect").addEventListener("click", async () => {
+        const a = api();
+        if (!a || !a.disconnect_google_workspace) {
+          showToast("Python bridge not ready.");
+          return;
+        }
+        const ok = await showConfirm(
+          "Remove Credentials",
+          "Remove stored Google Workspace OAuth credentials from this device?"
+        );
+        if (!ok) return;
+        const res = await a.disconnect_google_workspace();
+        if (!res.ok) {
+          showToast(res.error || "Could not remove credentials.");
+          return;
+        }
+        if ($("#google-workspace-credentials-path")) {
+          $("#google-workspace-credentials-path").value = "";
+        }
+        showToast(res.message || "Google Workspace credentials removed.");
+        await refreshGoogleWorkspaceAuthStatus();
       });
     }
 
@@ -11735,13 +11789,20 @@
           await persistSettingsNow({ applyDisplay: false });
         }
         const authorize = a.authorize_google_workspace || a.authorize_gmail;
-        const res = await authorize.call(a);
-        if (!res.ok) {
-          showToast(res.error || "Google Workspace authorization failed");
-          return;
+        beginBusy("Google Workspace", "Opening Google sign-in…", { delayMs: 0 });
+        try {
+          const res = await authorize.call(a);
+          if (!res || !res.ok) {
+            showToast((res && res.error) || "Google Workspace authorization failed");
+            return;
+          }
+          showToast(res.message || "Google Workspace connected.");
+          await refreshGoogleWorkspaceAuthStatus();
+        } catch (err) {
+          showToast("Google Workspace authorization failed: " + (err && err.message ? err.message : err));
+        } finally {
+          endBusy("Ready");
         }
-        showToast(res.message || "Google Workspace connected.");
-        await refreshGoogleWorkspaceAuthStatus();
       });
     }
 
@@ -11836,6 +11897,16 @@
 
     try {
       const boot = await a.get_bootstrap();
+      state.platform = boot.platform || { platform: "desktop", isAndroid: false, videoEditor: true, powershell: true };
+      if (state.platform.isAndroid) {
+        document.documentElement.setAttribute("data-platform", "android");
+      }
+      if (state.platform.videoEditor === false) {
+        document.documentElement.setAttribute("data-video-editor", "false");
+        const vidOpt = document.querySelector('#screen-select option[value="video-edit"]');
+        if (vidOpt) vidOpt.remove();
+        if ($("#btn-edit-video")) $("#btn-edit-video").hidden = true;
+      }
       state.config = boot.config;
       if (Array.isArray(boot.geminiTools)) {
         state.geminiToolsCatalog = boot.geminiTools.slice();

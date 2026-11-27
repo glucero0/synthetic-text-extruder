@@ -69,6 +69,20 @@ class FfmpegNotFoundError(RuntimeError):
     """Raised when ffmpeg/ffprobe cannot be located."""
 
 
+def _android_media_bridge() -> Any | None:
+    """Return the Chaquopy ``AndroidMediaBridge`` class when hosted in Android."""
+    from .platform_env import is_android
+
+    if not is_android():
+        return None
+    try:
+        from java import jclass  # type: ignore[import-not-found]
+
+        return jclass("com.synthetictextextruder.app.AndroidMediaBridge")
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _candidate_paths(name: str, extra: tuple[str, ...] = ()) -> list[str]:
     """Ordered unique existing paths for a tool (PATH first, then extras)."""
     seen: set[str] = set()
@@ -184,6 +198,12 @@ def find_ffprobe() -> str | None:
 
 
 def ffmpeg_available() -> dict[str, Any]:
+    bridge = _android_media_bridge()
+    if bridge is not None:
+        try:
+            return json.loads(str(bridge.statusJson()))
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": f"Android Media3 status check failed: {exc}"}
     ffmpeg = find_ffmpeg()
     ffprobe = find_ffprobe()
     if not ffmpeg:
@@ -222,18 +242,27 @@ def extract_video_frame_png(
     *,
     at_seconds: float = 0.0,
 ) -> bytes:
-    """Grab a single PNG frame from a video via ffmpeg (for media-basis I2V)."""
+    """Grab a single PNG frame from a video (MediaMetadataRetriever on Android, ffmpeg on desktop)."""
     import tempfile
+
+    src = Path(source)
+    if not src.is_file():
+        raise FileNotFoundError(f"Video not found: {src}")
+    t = max(0.0, float(at_seconds or 0.0))
+
+    bridge = _android_media_bridge()
+    if bridge is not None:
+        raw = bridge.extractFramePng(str(src), t)
+        data = bytes(raw) if raw is not None else b""
+        if not data:
+            raise RuntimeError("Could not extract a frame from the basis video.")
+        return data
 
     ffmpeg = find_ffmpeg()
     if not ffmpeg:
         raise FfmpegNotFoundError(
             "ffmpeg not found — needed to use a video as Studio basis for generation."
         )
-    src = Path(source)
-    if not src.is_file():
-        raise FileNotFoundError(f"Video not found: {src}")
-    t = max(0.0, float(at_seconds or 0.0))
     with tempfile.TemporaryDirectory(prefix="rgc_frame_") as tmp:
         out = Path(tmp) / "frame.png"
         cmd = [
@@ -268,11 +297,14 @@ def extract_video_frame_png(
 
 
 def video_has_audio_stream(source: str | Path) -> bool:
-    """True if ffprobe reports at least one audio stream."""
-    ffprobe = _require_ffprobe()
+    """True if the video file contains at least one audio stream."""
     src = Path(source)
     if not src.is_file():
         raise FileNotFoundError(f"Video not found: {src}")
+    bridge = _android_media_bridge()
+    if bridge is not None:
+        return bool(bridge.hasAudioStream(str(src)))
+    ffprobe = _require_ffprobe()
     proc = _run(
         [
             ffprobe,
@@ -295,18 +327,43 @@ def video_has_audio_stream(source: str | Path) -> bool:
     return bool(lines)
 
 
+def extract_audio_track(
+    source: str | Path,
+    *,
+    max_seconds: float | None = 600.0,
+) -> tuple[bytes, str]:
+    """Extract an audio track and its MIME type for speech transcription."""
+    src = Path(source)
+    if not src.is_file():
+        raise FileNotFoundError(f"Video not found: {src}")
+    bridge = _android_media_bridge()
+    if bridge is not None:
+        cap = float(max_seconds) if max_seconds is not None and float(max_seconds) > 0 else 0.0
+        raw = bridge.extractAudioM4a(str(src), cap)
+        data = bytes(raw) if raw is not None else b""
+        if len(data) < 32:
+            raise RuntimeError("Could not extract audio from video.")
+        return data, "audio/mp4"
+    return extract_audio_mp3(src, max_seconds=max_seconds), "audio/mpeg"
+
+
 def extract_audio_mp3(
     source: str | Path,
     *,
     max_seconds: float | None = 600.0,
 ) -> bytes:
-    """Demux audio to a compact mono MP3 for speech transcription."""
+    """Demux audio to a compact mono MP3 (or AAC M4A on Android) for speech transcription."""
     import tempfile
 
-    ffmpeg = _require_ffmpeg()
     src = Path(source)
     if not src.is_file():
         raise FileNotFoundError(f"Video not found: {src}")
+    bridge = _android_media_bridge()
+    if bridge is not None:
+        data, _mime = extract_audio_track(src, max_seconds=max_seconds)
+        return data
+
+    ffmpeg = _require_ffmpeg()
     with tempfile.TemporaryDirectory(prefix="rgc_audio_") as tmp:
         out = Path(tmp) / "audio.mp3"
         cmd = [ffmpeg, *_ffmpeg_quiet_args(), "-i", str(src)]
@@ -345,11 +402,19 @@ def extract_video_clip_bytes(
     """Re-encode a short MP4 clip for multimodal fallback when audio is missing."""
     import tempfile
 
-    ffmpeg = _require_ffmpeg()
     src = Path(source)
     if not src.is_file():
         raise FileNotFoundError(f"Video not found: {src}")
     dur = max(1.0, float(max_seconds or 90.0))
+    bridge = _android_media_bridge()
+    if bridge is not None:
+        raw = bridge.extractClipMp4(str(src), dur)
+        data = bytes(raw) if raw is not None else b""
+        if not data:
+            raise RuntimeError("Could not prepare a short video clip.")
+        return data
+
+    ffmpeg = _require_ffmpeg()
     with tempfile.TemporaryDirectory(prefix="rgc_clip_") as tmp:
         out = Path(tmp) / "clip.mp4"
         cmd = [
@@ -446,10 +511,17 @@ def _require_ffprobe() -> str:
 
 def probe_duration(path: str | Path) -> float:
     """Return media duration in seconds."""
-    ffprobe = _require_ffprobe()
     src = Path(path)
     if not src.is_file():
         raise FileNotFoundError(f"Video not found: {src}")
+    bridge = _android_media_bridge()
+    if bridge is not None:
+        info = json.loads(str(bridge.probeVideoInfoJson(str(src))))
+        duration = float(info.get("duration") or 0)
+        if duration <= 0:
+            raise RuntimeError("Could not determine video duration")
+        return duration
+    ffprobe = _require_ffprobe()
     proc = _run(
         [
             ffprobe,
@@ -473,10 +545,20 @@ def probe_duration(path: str | Path) -> float:
 
 
 def probe_video_info(path: str | Path) -> dict[str, Any]:
-    ffprobe = _require_ffprobe()
     src = Path(path)
     if not src.is_file():
         raise FileNotFoundError(f"Video not found: {src}")
+    bridge = _android_media_bridge()
+    if bridge is not None:
+        info = json.loads(str(bridge.probeVideoInfoJson(str(src))))
+        return {
+            "duration": float(info.get("duration") or 0),
+            "width": int(info.get("width") or 0),
+            "height": int(info.get("height") or 0),
+            "codec": str(info.get("codec") or ""),
+            "size": int(info.get("size") or src.stat().st_size),
+        }
+    ffprobe = _require_ffprobe()
     proc = _run(
         [
             ffprobe,
@@ -684,7 +766,6 @@ def apply_edits(
     trim: dict[str, Any] | None = None,
 ) -> Path:
     """Apply filter/crop/rotate/trim and write dest (mp4)."""
-    ffmpeg = _require_ffmpeg()
     source = Path(src)
     out = Path(dest)
     if not source.is_file():
@@ -700,7 +781,6 @@ def apply_edits(
         source_height=int(info.get("height") or 0),
     )
 
-    cmd = [ffmpeg, *_ffmpeg_quiet_args()]
     start = None
     end = None
     if trim:
@@ -708,9 +788,29 @@ def apply_edits(
         end = trim.get("end")
         if end is not None:
             end = float(end)
-        if start > 0:
+
+    # If nothing to do, copy bytes (faster on both desktop and Android).
+    if not vf and (start is None or start <= 0) and end is None:
+        shutil.copyfile(source, out)
+        return out
+
+    bridge = _android_media_bridge()
+    if bridge is not None:
+        payload = {
+            "filters": normalize_filters(filters),
+            "crop": crop,
+            "rotation": float(rotation or 0),
+            "trim": {"start": start or 0.0, "end": end} if trim else None,
+        }
+        bridge.applyEdits(str(source), str(out), json.dumps(payload))
+        return out
+
+    ffmpeg = _require_ffmpeg()
+    cmd = [ffmpeg, *_ffmpeg_quiet_args()]
+    if trim:
+        if start is not None and start > 0:
             cmd.extend(["-ss", f"{start:.3f}"])
-        if end is not None and end > start:
+        if end is not None and (start is None or end > start):
             cmd.extend(["-to", f"{end:.3f}"])
 
     cmd.extend(["-i", str(source)])
@@ -718,11 +818,6 @@ def apply_edits(
         cmd.extend(["-vf", vf])
     cmd.extend(_encode_args())
     cmd.append(str(out))
-
-    # If nothing to do, copy bytes (faster).
-    if not vf and (start is None or start <= 0) and end is None:
-        shutil.copyfile(source, out)
-        return out
 
     proc = _run(cmd)
     if proc.returncode == 0 and out.is_file() and out.stat().st_size > 0:
@@ -766,7 +861,6 @@ def trim_segment(
     end: float,
 ) -> Path:
     """Cut [start, end) from src into dest (re-encode for reliable concat)."""
-    ffmpeg = _require_ffmpeg()
     source = Path(src)
     out = Path(dest)
     if not source.is_file():
@@ -779,6 +873,16 @@ def trim_segment(
         raise ValueError("Trim segment too short")
     dur = end_s - start_s
 
+    bridge = _android_media_bridge()
+    if bridge is not None:
+        bridge.applyEdits(
+            str(source),
+            str(out),
+            json.dumps({"trim": {"start": start_s, "end": end_s}}),
+        )
+        return out
+
+    ffmpeg = _require_ffmpeg()
     cmd = [
         ffmpeg,
         *_ffmpeg_quiet_args(),
@@ -866,6 +970,18 @@ def assemble_segments(
             trim={"start": start, "end": end},
         )
 
+    bridge = _android_media_bridge()
+    if bridge is not None:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "segments": [{"start": s, "end": e} for s, e in ranges],
+            "filters": normalize_filters(filters),
+            "crop": crop,
+            "rotation": float(rotation or 0),
+        }
+        bridge.applyEdits(str(source), str(out), json.dumps(payload))
+        return out
+
     temps: list[Path] = []
     mid: Path | None = None
     try:
@@ -908,7 +1024,6 @@ def concat_videos(paths: list[str | Path], dest: str | Path) -> Path:
     """Re-encode concat of multiple videos into dest."""
     if len(paths) < 2:
         raise ValueError("Need at least two videos to splice")
-    ffmpeg = _require_ffmpeg()
     out = Path(dest)
     out.parent.mkdir(parents=True, exist_ok=True)
     resolved: list[Path] = []
@@ -917,6 +1032,13 @@ def concat_videos(paths: list[str | Path], dest: str | Path) -> Path:
         if not path.is_file():
             raise FileNotFoundError(f"Video not found: {path}")
         resolved.append(path)
+
+    bridge = _android_media_bridge()
+    if bridge is not None:
+        bridge.concatVideos(json.dumps([str(p) for p in resolved]), str(out))
+        return out
+
+    ffmpeg = _require_ffmpeg()
 
     # Filter concat is more reliable across mismatched codecs than demuxer copy.
     # For N inputs: [0:v][0:a][1:v][1:a]...concat=n=N:v=1:a=1[v][a]
@@ -1014,13 +1136,21 @@ def build_image_slideshow(
     seconds_per_image: float = 1.5,
 ) -> Path:
     """Concatenate stills into an H.264 MP4 slideshow."""
-    ffmpeg = _require_ffmpeg()
     paths = [Path(p) for p in image_paths if p and Path(p).is_file()]
     if len(paths) < 2:
         raise ValueError("Slideshow needs at least two images")
     out = Path(dest)
     out.parent.mkdir(parents=True, exist_ok=True)
     duration = max(0.2, min(8.0, float(seconds_per_image or 1.5)))
+    bridge = _android_media_bridge()
+    if bridge is not None:
+        bridge.buildSlideshow(
+            json.dumps([str(p.resolve()) for p in paths]),
+            str(out),
+            duration,
+        )
+        return out
+    ffmpeg = _require_ffmpeg()
     list_file = out.with_suffix(".concat.txt")
     try:
         lines: list[str] = []

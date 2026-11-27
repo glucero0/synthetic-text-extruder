@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,7 @@ from .config import (
     is_legacy_gmail_token_path,
     load_config,
     normalize_google_workspace_cfg,
+    save_config,
 )
 
 logger = logging.getLogger(__name__)
@@ -59,8 +61,10 @@ SCOPE_PRODUCTS: list[tuple[str, tuple[str, ...]]] = [
 ]
 
 DEFAULT_TOKEN_REL = ".synthetic-text-extruder/google_workspace_token.json"
+DEFAULT_CLIENT_REL = ".synthetic-text-extruder/google_oauth_client.json"
 PREVIOUS_TOKEN_REL = ".retro-98-ai-creator/google_workspace_token.json"
 LEGACY_TOKEN_REL = ".retro-98-ai-creator/gmail_token.json"
+MAX_OAUTH_JSON_BYTES = 256 * 1024
 CONNECT_HINT = (
     "Google Workspace is not authorized. Open Settings → Gemini → "
     "Google Workspace and click Connect Google Workspace after saving your "
@@ -188,6 +192,135 @@ def get_google_credentials(
     return creds
 
 
+def classify_google_oauth_json(data: Any) -> str:
+    """Distinguish an authorized user token JSON from a Google Cloud OAuth client JSON."""
+    if not isinstance(data, dict):
+        return "unknown"
+    for key in ("installed", "web"):
+        block = data.get(key)
+        if isinstance(block, dict) and str(block.get("client_id") or "").strip():
+            return "client"
+    has_client = bool(str(data.get("client_id") or "").strip())
+    has_token_field = bool(
+        str(data.get("refresh_token") or "").strip()
+        or str(data.get("token") or "").strip()
+        or str(data.get("access_token") or "").strip()
+    )
+    if (
+        str(data.get("type") or "").strip().lower() == "authorized_user"
+        or (has_client and has_token_field)
+    ):
+        return "token"
+    return "unknown"
+
+
+def import_google_oauth_json(
+    raw_json: str,
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    Import either an authorized token JSON or an OAuth client JSON into private app storage.
+
+    Returns a dict with ``kind`` (``'token'`` or ``'client'``), ``ok``, and updated auth status.
+    """
+    text = str(raw_json or "").strip()
+    if not text:
+        return {"ok": False, "error": "Selected JSON file is empty."}
+    if len(text.encode("utf-8")) > MAX_OAUTH_JSON_BYTES:
+        return {"ok": False, "error": "OAuth JSON file is too large (max 256 KB)."}
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as exc:
+        return {"ok": False, "error": f"Invalid JSON file: {exc}"}
+
+    kind = classify_google_oauth_json(parsed)
+    cfg = cfg or load_config()
+
+    if kind == "token":
+        dest = token_path(cfg)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(json.dumps(parsed, indent=2), encoding="utf-8")
+        status = google_auth_status(cfg)
+        if not status.get("authorized"):
+            return {
+                "ok": False,
+                "kind": "token",
+                **status,
+                "error": (
+                    "Token file was saved, but Google could not validate or refresh it. "
+                    "It may be expired or revoked — import a fresh token or use an OAuth client JSON to reconnect."
+                ),
+            }
+        products = status.get("granted_products") or []
+        summary = f" ({', '.join(products)})" if products else ""
+        return {
+            **status,
+            "ok": True,
+            "kind": "token",
+            "path": str(dest),
+            "message": (
+                f"Google Workspace token imported into private storage{summary}. "
+                "You can safely delete the copy from Downloads."
+            ),
+        }
+
+    if kind == "client":
+        dest = expand_path(DEFAULT_CLIENT_REL)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(json.dumps(parsed, indent=2), encoding="utf-8")
+        updated_cfg = save_config(
+            {"google_workspace": {"credentials_path": DEFAULT_CLIENT_REL}},
+            existing=cfg,
+        )
+        status = google_auth_status(updated_cfg)
+        return {
+            **status,
+            "ok": True,
+            "kind": "client",
+            "path": str(dest),
+            "message": (
+                "OAuth client JSON imported into private storage. "
+                "Tap Connect Google Workspace to sign in (you can safely delete the Downloads copy)."
+            ),
+        }
+
+    return {
+        "ok": False,
+        "error": (
+            "Unrecognized JSON file. Pick either a Google Cloud OAuth client JSON "
+            "(containing an 'installed' or 'web' section) or an authorized "
+            "google_workspace_token.json file."
+        ),
+    }
+
+
+def clear_google_credentials(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Remove stored OAuth token and app-private client JSON copy."""
+    cfg = cfg or load_config()
+    tpath = token_path(cfg)
+    if tpath.is_file():
+        try:
+            tpath.unlink()
+        except OSError as exc:
+            logger.warning("Could not remove token file %s: %s", tpath, exc)
+    private_client = expand_path(DEFAULT_CLIENT_REL)
+    if private_client.is_file():
+        try:
+            private_client.unlink()
+        except OSError as exc:
+            logger.warning("Could not remove client file %s: %s", private_client, exc)
+    updated_cfg = save_config(
+        {"google_workspace": {"credentials_path": None}},
+        existing=cfg,
+    )
+    status = google_auth_status(updated_cfg)
+    return {
+        **status,
+        "ok": True,
+        "message": "Google Workspace credentials removed from app storage.",
+    }
+
+
 def google_auth_status(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     """Report whether Google OAuth is configured, authorized, and which scopes landed."""
     cfg = cfg or load_config()
@@ -196,9 +329,13 @@ def google_auth_status(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     stored = _load_stored_credentials(path)
     creds = get_google_credentials(cfg)
     granted = granted_scopes(creds or stored)
+    has_client = creds_path is not None and creds_path.is_file()
+    has_token = stored is not None or path.is_file()
     return {
         "ok": True,
-        "configured": creds_path is not None and creds_path.is_file(),
+        "configured": has_client or creds is not None,
+        "has_client_json": has_client,
+        "has_token": has_token,
         "authorized": creds is not None,
         "has_refresh_token": bool(stored and getattr(stored, "refresh_token", None)),
         "credentials_path": str(creds_path) if creds_path else "",
@@ -250,6 +387,9 @@ def authorize_google(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
         creds = flow.run_local_server(
             port=0,
             open_browser=True,
+            success_message=(
+                "Google Workspace connected! Close this tab to return to Synthetic Text Extruder."
+            ),
             access_type="offline",
             prompt="consent",
             include_granted_scopes="true",

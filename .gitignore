@@ -56,3 +56,11 @@ htmlcov/
 
 # Logs
 *.log
+
+# Android build artifacts & private signing keys (never commit keystores)
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+*.jks
+*.keystore
