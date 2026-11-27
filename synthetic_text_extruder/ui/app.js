@@ -7926,7 +7926,7 @@
   }
 
   function geminiApiKeyInputs() {
-    return [$("#gemini-key"), $("#gemini-key-google")].filter(Boolean);
+    return [$("#gemini-key")].filter(Boolean);
   }
 
   function typedGeminiApiKey() {
@@ -7968,8 +7968,8 @@
       state.config.gemini.api_key_set
     );
 
-    const badges = [$("#gemini-key-badge"), $("#gemini-key-google-badge")];
-    const statuses = [$("#gemini-key-status"), $("#gemini-key-google-status")];
+    const badges = [$("#gemini-key-badge")];
+    const statuses = [$("#gemini-key-status")];
     badges.forEach((badge) => {
       if (!badge) return;
       badge.textContent = geminiSet ? "Saved" : "Not set";
@@ -8267,6 +8267,7 @@
     const allowed = {
       models: true,
       generation: true,
+      workspace: true,
       google: true,
       storage: true,
       appearance: true,
@@ -8275,6 +8276,7 @@
     };
     let next = allowed[page] ? page : "models";
     if (next === "ai") next = "models";
+    if (next === "google") next = "workspace";
     if (next === "display") next = "appearance";
     const prevPage = state.settingsPage;
     if (!opts.skipSave && prevPage && prevPage !== next) {
@@ -11796,13 +11798,11 @@
     geminiApiKeyInputs().forEach((input) => {
       input.addEventListener("input", () => syncGeminiApiKeyInputs(input));
     });
-    ["btn-save-gemini-key", "btn-save-gemini-key-google"].forEach((id) => {
-      const btn = $("#" + id);
-      if (!btn) return;
-      btn.addEventListener("click", () => {
+    if ($("#btn-save-gemini-key")) {
+      $("#btn-save-gemini-key").addEventListener("click", () => {
         void saveGeminiApiKeyFromControls();
       });
-    });
+    }
 
     if ($("#btn-gemini-refresh-models")) {
       $("#btn-gemini-refresh-models").addEventListener("click", async () => {
